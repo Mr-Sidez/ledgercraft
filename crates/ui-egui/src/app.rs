@@ -87,7 +87,7 @@ impl LedgerApp {
         match what {
             Pending::New => {
                 self.replace_session(Session::new(Company::with_default_accounts("My Company")));
-                self.info("New company created with a starter chart of accounts. Rename it in Company ▸ Settings.");
+                self.info("New company created with a starter chart of accounts.");
             }
             Pending::Sample => match sample_company() {
                 Ok(c) => {
@@ -171,8 +171,24 @@ impl LedgerApp {
         else {
             return;
         };
-               match std::fs::write(&path, format!("\u{feff}{csv}")) {
+        // Excel on Windows reads a CSV without a byte-order mark as the local
+        // ANSI code page, which garbles non-ASCII characters. The UTF-8 BOM
+        // tells it the file is UTF-8.
+        match std::fs::write(&path, format!("\u{feff}{csv}")) {
+            Ok(()) => self.info(format!("Exported {}", path.display())),
+            Err(e) => self.error(format!("Could not write {}: {e}", path.display())),
+        }
+    }
 
+    fn export_xlsx(&mut self, name: &str, bytes: &[u8]) {
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("Excel workbook", &["xlsx"])
+            .set_file_name(name)
+            .save_file()
+        else {
+            return;
+        };
+        match std::fs::write(&path, bytes) {
             Ok(()) => self.info(format!("Exported {}", path.display())),
             Err(e) => self.error(format!("Could not write {}: {e}", path.display())),
         }
@@ -240,10 +256,11 @@ impl LedgerApp {
                 self.page = Page::Form(FormKind::PayBills);
             }
             Action::Error(e) => self.error(e),
+            Action::ClearStatus => self.info("Ready"),
             Action::ExportCsv { name, csv } => self.export_csv(&name, &csv),
-            Action::ClearStatus => {
-                let todo = "not yet implemented";
-                panic!("{todo}")
+            Action::ExportXlsx { name, data } => match data {
+                Ok(bytes) => self.export_xlsx(&name, &bytes),
+                Err(e) => self.error(e),
             },
         }
     }
@@ -275,7 +292,6 @@ impl LedgerApp {
         if pressed(&CHECK) {
             self.page = Page::Form(FormKind::Check);
         }
-
         if pressed(&SIDE_BAR) {
             self.show_nav = !self.show_nav;
         }
@@ -284,7 +300,7 @@ impl LedgerApp {
     fn menu_bar(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("menu").show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
-                if !self.show_nav && ui.button(">").on_hover_text("Show navigation bar (Cmd+B)").clicked() {
+                if !self.show_nav && ui.button(">").on_hover_text("Show side bar (Ctrl+B)").clicked() {
                     self.show_nav = true;
                 }
                 ui.menu_button("File", |ui| {
@@ -327,12 +343,11 @@ impl LedgerApp {
                         self.redo();
                     }
                 });
-                                ui.menu_button("View", |ui| {
+                ui.menu_button("View", |ui| {
                     if ui.checkbox(&mut self.show_nav, "Side Bar    Ctrl+B").clicked() {
                         ui.close_menu();
                     }
                 });
-
                 ui.menu_button("Lists", |ui| {
                     for (label, page) in [
                         ("Chart of Accounts", Page::Accounts),
@@ -370,6 +385,8 @@ impl LedgerApp {
                         }
                     }
                 });
+                // A real menu: each report opens directly, rather than
+                // duplicating the side bar's "Reports" link.
                 ui.menu_button("Reports", |ui| {
                     for kind in ledgercraft_reports::ReportKind::ALL {
                         if ui.button(kind.label()).clicked() {
@@ -380,12 +397,11 @@ impl LedgerApp {
                     }
                 });
                 ui.menu_button("Help", |ui| {
-                                        if ui.button("Licenses").clicked() {
+                    if ui.button("Licenses").clicked() {
                         ui.close_menu();
                         self.licenses.show_tab(LicenseTab::Summary);
                     }
                     ui.separator();
-                    
                     if ui.button("About LedgerCraft").clicked() {
                         ui.close_menu();
                         self.show_about = true;
@@ -425,9 +441,8 @@ impl LedgerApp {
                 for (label, page) in items {
                     let selected = self.page == page;
                     let text = RichText::new(label).size(15.0).color(theme::NAV_TEXT);
-                                        if ui.selectable_label(selected, text).on_hover_text(page.hint()).clicked() {
+                    if ui.selectable_label(selected, text).on_hover_text(page.hint()).clicked() {
                         self.page = page;
-
                     }
                 }
                 ui.add_space(16.0);
@@ -435,9 +450,8 @@ impl LedgerApp {
                 for kind in [FormKind::Invoice, FormKind::ReceivePayment, FormKind::Bill, FormKind::PayBills, FormKind::Check, FormKind::Deposit] {
                     let selected = self.page == Page::Form(kind);
                     let text = RichText::new(kind.title()).color(theme::NAV_TEXT);
-                                        if ui.selectable_label(selected, text).on_hover_text(kind.hint()).clicked() {
+                    if ui.selectable_label(selected, text).on_hover_text(kind.hint()).clicked() {
                         self.page = Page::Form(kind);
-
                     }
                 }
             });
@@ -517,12 +531,11 @@ impl LedgerApp {
                 .color(theme::MUTED),
             );
         });
-                self.show_about = open;
+        self.show_about = open;
         if view_licenses {
             self.licenses.show_tab(LicenseTab::Summary);
         }
         self.licenses.ui(ctx);
-
     }
 }
 

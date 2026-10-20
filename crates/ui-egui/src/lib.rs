@@ -82,4 +82,7 @@ pub(crate) enum Action {
     /// A form was cleared: drop any message about what was in it.
     ClearStatus,
     ExportCsv { name: String, csv: String },
+        /// A finished .xlsx file, or why it could not be built.
+    ExportXlsx { name: String, data: Result<Vec<u8>, String> },
+
 }

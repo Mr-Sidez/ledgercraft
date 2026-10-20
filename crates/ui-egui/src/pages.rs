@@ -543,9 +543,19 @@ pub(crate) fn reports(ui: &mut Ui, c: &Company, s: &mut ReportState, out: &mut V
         }
     };
     let report = s.kind.build(c, from, to);
-    if ui.button("Export CSV…").clicked() {
-        out.push(Action::ExportCsv { name: format!("{}.csv", s.kind.cli_id()), csv: report.to_csv() });
-    }
+        ui.horizontal(|ui| {
+        let excel = ui.button("Export to Excel…").on_hover_text(
+            "A formatted Excel workbook (.xlsx): money formats, bold totals and sized columns.",
+        );
+        if excel.clicked() {
+            out.push(Action::ExportXlsx { name: format!("{}.xlsx", s.kind.cli_id()), data: report.to_xlsx() });
+        }
+        let csv = ui.button("Export CSV…").on_hover_text("Plain values only, for importing into other programs.");
+        if csv.clicked() {
+            out.push(Action::ExportCsv { name: format!("{}.csv", s.kind.cli_id()), csv: report.to_csv() });
+        }
+    });
+
     ui.separator();
     widgets::report_view(ui, &report, out);
-}
+}   

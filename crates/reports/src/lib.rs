@@ -7,6 +7,7 @@
 mod aging;
 mod report;
 mod statements;
+mod xlsx;
 
 pub use aging::{ap_aging, ar_aging};
 pub use report::{Cell, Report, Row, RowKind};
