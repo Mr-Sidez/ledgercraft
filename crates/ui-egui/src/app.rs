@@ -365,6 +365,7 @@ impl LedgerApp {
             .exact_width(190.0)
             .frame(egui::Frame::none().fill(theme::NAV_BG).inner_margin(10.0))
             .show(ctx, |ui| {
+                theme::nav_visuals(ui);
                 ui.label(RichText::new("LedgerCraft").size(20.0).strong().color(theme::NAV_TEXT));
                 ui.add_space(12.0);
                 let items: [(&str, Page); 8] = [

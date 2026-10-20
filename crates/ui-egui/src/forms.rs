@@ -274,7 +274,7 @@ pub(crate) fn invoice(ui: &mut Ui, c: &Company, f: &mut InvoiceForm, out: &mut V
                     ui.label("");
                 }
             }
-            if ui.small_button("✕").on_hover_text("Remove line").clicked() {
+            if ui.small_button("×").on_hover_text("Remove line").clicked() {
                 remove = Some(i);
             }
             ui.end_row();
@@ -578,7 +578,7 @@ fn account_lines(ui: &mut Ui, salt: &str, c: &Company, lines: &mut Vec<AccountLi
             if let Ok(m) = Money::parse(&line.amount) {
                 total = total.saturating_add(m);
             }
-            if ui.small_button("✕").on_hover_text("Remove line").clicked() {
+            if ui.small_button("×").on_hover_text("Remove line").clicked() {
                 remove = Some(i);
             }
             ui.end_row();
@@ -794,7 +794,7 @@ pub(crate) fn journal(ui: &mut Ui, c: &Company, f: &mut JournalForm, out: &mut V
             widgets::party_combo(ui, ("je_party", i), c, &mut line.party);
             debits = debits.saturating_add(Money::parse_or_zero(&line.debit).unwrap_or(Money::ZERO));
             credits = credits.saturating_add(Money::parse_or_zero(&line.credit).unwrap_or(Money::ZERO));
-            if ui.small_button("✕").on_hover_text("Remove line").clicked() {
+            if ui.small_button("×").on_hover_text("Remove line").clicked() {
                 remove = Some(i);
             }
             ui.end_row();

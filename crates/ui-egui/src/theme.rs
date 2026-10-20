@@ -9,6 +9,17 @@ pub(crate) const POSITIVE: Color32 = Color32::from_rgb(0x2e, 0x7d, 0x4f);
 pub(crate) const MUTED: Color32 = Color32::from_rgb(0x6b, 0x72, 0x80);
 pub(crate) const NAV_BG: Color32 = Color32::from_rgb(0x1d, 0x2b, 0x36);
 pub(crate) const NAV_TEXT: Color32 = Color32::from_rgb(0xe8, 0xee, 0xf2);
+pub(crate) const NAV_HOVER: Color32 = Color32::from_rgb(0x2c, 0x40, 0x4f);
+
+/// The side bar is dark, so its selected and hovered items need dark-friendly
+/// backgrounds (the light theme's pale selection makes white text unreadable).
+pub(crate) fn nav_visuals(ui: &mut egui::Ui) {
+    let v = ui.visuals_mut();
+    v.selection.bg_fill = ACCENT;
+    v.widgets.hovered.weak_bg_fill = NAV_HOVER;
+    v.widgets.hovered.bg_stroke = egui::Stroke::NONE;
+    v.widgets.active.weak_bg_fill = ACCENT;
+}
 
 pub(crate) fn apply(ctx: &egui::Context) {
     let mut style = (*ctx.style()).clone();
