@@ -1,0 +1,17 @@
+[package]
+name = "ledgercraft"
+description = "LedgerCraft desktop app: open-source small-business accounting"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+ledgercraft-engine.workspace = true
+ledgercraft-ui-egui.workspace = true
+eframe.workspace = true
+
+[lints]
+workspace = true

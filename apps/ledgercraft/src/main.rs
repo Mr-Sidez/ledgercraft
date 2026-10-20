@@ -1,0 +1,75 @@
+//! LedgerCraft desktop app.
+//!
+//! ```text
+//! ledgercraft                  # start with a new company
+//! ledgercraft books.lcbooks    # open a company file
+//! ledgercraft --sample         # open the sample company
+//! ```
+
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
+use std::path::PathBuf;
+use std::process::ExitCode;
+
+use eframe::egui;
+use ledgercraft_engine::{new_company, sample_company, Session};
+use ledgercraft_ui_egui::LedgerApp;
+
+fn main() -> ExitCode {
+    let mut path: Option<PathBuf> = None;
+    let mut sample = false;
+    for arg in std::env::args().skip(1) {
+        match arg.as_str() {
+            "--sample" => sample = true,
+            "--version" | "-V" => {
+                println!("ledgercraft {}", env!("CARGO_PKG_VERSION"));
+                return ExitCode::SUCCESS;
+            }
+            "--help" | "-h" => {
+                println!("usage: ledgercraft [--sample] [FILE.lcbooks]");
+                return ExitCode::SUCCESS;
+            }
+            other => path = Some(PathBuf::from(other)),
+        }
+    }
+
+    let session = if let Some(p) = &path {
+        match Session::open(p) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("ledgercraft: could not open {}: {e}", p.display());
+                return ExitCode::FAILURE;
+            }
+        }
+    } else if sample {
+        match sample_company() {
+            Ok(c) => Session::new(c),
+            Err(e) => {
+                eprintln!("ledgercraft: could not build the sample company: {e}");
+                return ExitCode::FAILURE;
+            }
+        }
+    } else {
+        Session::new(new_company("My Company"))
+    };
+
+    let options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_title("LedgerCraft")
+            .with_inner_size([1280.0, 800.0])
+            .with_min_inner_size([900.0, 560.0]),
+        ..Default::default()
+    };
+    let result = eframe::run_native(
+        "LedgerCraft",
+        options,
+        Box::new(move |cc| Ok(Box::new(LedgerApp::new(cc, session)))),
+    );
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("ledgercraft: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}

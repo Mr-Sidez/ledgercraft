@@ -1,0 +1,49 @@
+# LedgerCraft roadmap
+
+Stage: **pre-alpha 0.1** — the double-entry core, the everyday customer,
+vendor and banking forms, and the core reports. Last updated 2026-10-19.
+
+Estimates are for what a typical small business uses QuickBooks Desktop for
+day to day; weighted by depth, LedgerCraft 0.1 covers roughly 20% of it.
+
+## Done (M0–M1)
+
+* M0 Foundation: workspace, layering, lints, xtask gates, CI, licences, clean-room rules
+* M0 Core types: exact money and quantities, calendar dates
+* M1 Ledger: 15 account types, chart of accounts, customers, vendors, items,
+  invoices, payments, bills, bill payments, checks, deposits, journal entries,
+  void, validation, open balances
+* M1 Reports: P&L, Balance Sheet, Trial Balance, A/R and A/P Aging, Transaction
+  List, registers, CSV
+* M1 Engine: commands, undo/redo, atomic `.lcbooks` files, sample company
+* M1 Apps: desktop app (egui), CLI
+
+## Next (M2 — usable for a real sole proprietor)
+
+1. M2.1 Edit a posted transaction (today: void and re-enter); open a transaction from any list or report
+2. M2.2 Bank reconciliation with cleared status and reconciliation reports
+3. M2.3 Bank feed import: OFX/QFX/QBO and CSV, with matching and rules
+4. M2.4 Sales tax: tax items, rates, groups, Sales Tax Payable and liability report
+5. M2.5 Printable and PDF invoices and statements (original templates)
+6. M2.6 Credit memos, refunds, customer credits; sales receipts
+7. M2.7 Closing date and password; audit trail report
+8. M2.8 Edit and merge list entries; sub-accounts; classes
+9. M2.9 Native file dialogs remembered locations, recent files, auto-backup
+
+## Later (M3 — small business)
+
+* Inventory (average cost), purchase orders, estimates → invoices
+* Recurring (memorized) transactions and reminders
+* Budgets, P&L by class, by customer, by month
+* IIF import/export, CSV list import, QuickBooks Online CSV export import
+* Multi-currency
+* Agent interfaces: JSON control channel and MCP server over the command catalog
+* Encryption at rest, multi-user via a local server
+* Performance: copy-on-write company state, cached balances
+
+## Out of scope for now
+
+* Payroll and tax filing (jurisdiction-specific and regulated; may become a
+  separate plug-in project)
+* Reading `.QBW` files (proprietary format; see docs/clean-room.md). Migration
+  will go through IIF, CSV and report exports.

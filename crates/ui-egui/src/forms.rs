@@ -1,0 +1,851 @@
+//! Transaction entry forms. Each form keeps what the user typed as text and
+//! only turns it into a [`Command`] when they press Save, so a half-typed
+//! amount never reaches the books.
+
+use std::collections::BTreeMap;
+
+use eframe::egui::{self, RichText, Ui};
+use ledgercraft_core::{Date, Money, Qty};
+use ledgercraft_engine::Command;
+use ledgercraft_ledger::{
+    AccountId, AccountLine, AccountType, Applied, Bill, Check, Company, CustomerId, Deposit,
+    Invoice, ItemId, JournalEntry, JournalLine, Party, PayBill, ReceivePayment, SalesLine,
+    TxnBody, TxnId, VendorId,
+};
+
+use crate::widgets::{self, field, money_label};
+use crate::{theme, Action, FormKind, Reset};
+
+fn today() -> String {
+    Date::today().to_string()
+}
+
+fn parse_date(label: &str, s: &str) -> Result<Date, String> {
+    Date::parse(s).map_err(|e| format!("{label}: {e}"))
+}
+
+// ----- state ----------------------------------------------------------------
+
+#[derive(Clone, Default)]
+pub(crate) struct SalesLineInput {
+    pub item: Option<ItemId>,
+    pub description: String,
+    pub qty: String,
+    pub rate: String,
+    pub account: Option<AccountId>,
+}
+
+impl SalesLineInput {
+    fn is_blank(&self) -> bool {
+        self.item.is_none()
+            && self.description.trim().is_empty()
+            && self.rate.trim().is_empty()
+            && self.account.is_none()
+    }
+}
+
+pub(crate) struct InvoiceForm {
+    pub customer: Option<CustomerId>,
+    pub date: String,
+    pub due: String,
+    pub number: String,
+    pub memo: String,
+    pub lines: Vec<SalesLineInput>,
+}
+
+impl Default for InvoiceForm {
+    fn default() -> Self {
+        Self {
+            customer: None,
+            date: today(),
+            due: String::new(),
+            number: String::new(),
+            memo: String::new(),
+            lines: vec![SalesLineInput::default(); 3],
+        }
+    }
+}
+
+/// Receive Payment (customer side) or Pay Bills (vendor side).
+pub(crate) struct PaymentForm {
+    pub customer: Option<CustomerId>,
+    pub vendor: Option<VendorId>,
+    pub date: String,
+    pub number: String,
+    pub memo: String,
+    pub method: String,
+    pub account: Option<AccountId>,
+    pub amounts: BTreeMap<TxnId, String>,
+}
+
+impl Default for PaymentForm {
+    fn default() -> Self {
+        Self {
+            customer: None,
+            vendor: None,
+            date: today(),
+            number: String::new(),
+            memo: String::new(),
+            method: String::new(),
+            account: None,
+            amounts: BTreeMap::new(),
+        }
+    }
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct AccountLineInput {
+    pub account: Option<AccountId>,
+    pub description: String,
+    pub amount: String,
+}
+
+/// Enter Bill, Write Check and Make Deposit share this shape.
+pub(crate) struct LinesForm {
+    pub vendor: Option<VendorId>,
+    pub payee: Option<Party>,
+    pub account: Option<AccountId>,
+    pub date: String,
+    pub due: String,
+    pub number: String,
+    pub memo: String,
+    pub lines: Vec<AccountLineInput>,
+}
+
+impl Default for LinesForm {
+    fn default() -> Self {
+        Self {
+            vendor: None,
+            payee: None,
+            account: None,
+            date: today(),
+            due: String::new(),
+            number: String::new(),
+            memo: String::new(),
+            lines: vec![AccountLineInput::default(); 3],
+        }
+    }
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct JournalLineInput {
+    pub account: Option<AccountId>,
+    pub debit: String,
+    pub credit: String,
+    pub memo: String,
+    pub party: Option<Party>,
+}
+
+pub(crate) struct JournalForm {
+    pub date: String,
+    pub number: String,
+    pub memo: String,
+    pub lines: Vec<JournalLineInput>,
+}
+
+impl Default for JournalForm {
+    fn default() -> Self {
+        Self {
+            date: today(),
+            number: String::new(),
+            memo: String::new(),
+            lines: vec![JournalLineInput::default(); 4],
+        }
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct Forms {
+    pub invoice: InvoiceForm,
+    pub receive: PaymentForm,
+    pub bill: LinesForm,
+    pub pay_bills: PaymentForm,
+    pub check: LinesForm,
+    pub deposit: LinesForm,
+    pub journal: JournalForm,
+}
+
+impl Forms {
+    pub(crate) fn reset(&mut self, kind: FormKind) {
+        match kind {
+            FormKind::Invoice => self.invoice = InvoiceForm::default(),
+            FormKind::ReceivePayment => self.receive = PaymentForm::default(),
+            FormKind::Bill => self.bill = LinesForm::default(),
+            FormKind::PayBills => self.pay_bills = PaymentForm::default(),
+            FormKind::Check => self.check = LinesForm::default(),
+            FormKind::Deposit => self.deposit = LinesForm::default(),
+            FormKind::Journal => self.journal = JournalForm::default(),
+        }
+    }
+}
+
+// ----- shared pieces ----------------------------------------------------------
+
+fn header(ui: &mut Ui, kind: FormKind) {
+    ui.label(RichText::new(kind.title()).heading().color(theme::ACCENT));
+    ui.add_space(6.0);
+}
+
+/// The Save / Clear buttons. Returns (save, clear).
+fn footer(ui: &mut Ui) -> (bool, bool) {
+    ui.add_space(10.0);
+    let mut save = false;
+    let mut clear = false;
+    ui.horizontal(|ui| {
+        save = ui.button(RichText::new("Save & New").strong()).clicked();
+        clear = ui.button("Clear").clicked();
+    });
+    (save, clear)
+}
+
+fn finish(out: &mut Vec<Action>, kind: FormKind, built: Result<Command, String>) {
+    match built {
+        Ok(cmd) => out.push(Action::Run { cmd, reset: Reset::Form(kind) }),
+        Err(e) => out.push(Action::Error(e)),
+    }
+}
+
+fn total_row(ui: &mut Ui, label: &str, total: Money) {
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(label).strong());
+        ui.label(RichText::new(total.to_string()).strong().size(16.0));
+    });
+}
+
+// ----- invoice ------------------------------------------------------------------
+
+pub(crate) fn invoice(ui: &mut Ui, c: &Company, f: &mut InvoiceForm, out: &mut Vec<Action>) {
+    header(ui, FormKind::Invoice);
+    egui::Grid::new("inv_head").num_columns(4).spacing([12.0, 6.0]).show(ui, |ui| {
+        ui.label("Customer");
+        if widgets::customer_combo(ui, "inv_customer", c, &mut f.customer) {
+            set_due_from_terms(c, f);
+        }
+        ui.label("Invoice #");
+        let hint = widgets::next_number(c, 1001, |b| matches!(b, TxnBody::Invoice(_)));
+        field(ui, &mut f.number, 100.0, &hint);
+        ui.end_row();
+        ui.label("Date");
+        if field(ui, &mut f.date, 110.0, "YYYY-MM-DD").changed() {
+            set_due_from_terms(c, f);
+        }
+        ui.label("Due date");
+        field(ui, &mut f.due, 110.0, "from terms");
+        ui.end_row();
+    });
+    if let Some(cust) = f.customer.and_then(|id| c.customer(id)) {
+        let addr = cust.contact.address.lines().join(", ");
+        if !addr.is_empty() {
+            ui.label(RichText::new(format!("Bill to: {addr}")).color(theme::MUTED));
+        }
+    }
+    ui.add_space(8.0);
+
+    let mut remove = None;
+    let mut total = Money::ZERO;
+    egui::Grid::new("inv_lines").striped(true).spacing([8.0, 4.0]).show(ui, |ui| {
+        for h in ["Item", "Description", "Qty", "Rate", "Income account", "Amount", ""] {
+            ui.label(RichText::new(h).strong());
+        }
+        ui.end_row();
+        for (i, line) in f.lines.iter_mut().enumerate() {
+            if widgets::item_combo(ui, ("inv_item", i), c, &mut line.item) {
+                if let Some(item) = line.item.and_then(|id| c.item(id)) {
+                    line.description = item.spec.description.clone();
+                    line.rate = item.spec.rate.to_plain_string();
+                    line.account = Some(item.spec.income_account);
+                    if line.qty.trim().is_empty() {
+                        line.qty = "1".into();
+                    }
+                }
+            }
+            field(ui, &mut line.description, 220.0, "");
+            field(ui, &mut line.qty, 50.0, "1");
+            field(ui, &mut line.rate, 80.0, "0.00");
+            widgets::account_combo(ui, ("inv_acct", i), c, &mut line.account, |k| !k.needs_party());
+            let qty = if line.qty.trim().is_empty() { Ok(Qty::ONE) } else { Qty::parse(&line.qty) };
+            match (qty, Money::parse(&line.rate)) {
+                (Ok(q), Ok(r)) => {
+                    let amount = r.times(q).unwrap_or(Money::ZERO);
+                    total = total.saturating_add(amount);
+                    money_label(ui, amount, false);
+                }
+                _ => {
+                    ui.label("");
+                }
+            }
+            if ui.small_button("✕").on_hover_text("Remove line").clicked() {
+                remove = Some(i);
+            }
+            ui.end_row();
+        }
+    });
+    if let Some(i) = remove {
+        if i < f.lines.len() {
+            f.lines.remove(i);
+        }
+    }
+    if ui.button("+ Add line").clicked() {
+        f.lines.push(SalesLineInput::default());
+    }
+    ui.add_space(6.0);
+    ui.horizontal(|ui| {
+        ui.label("Memo");
+        field(ui, &mut f.memo, 360.0, "");
+    });
+    total_row(ui, "Total", total);
+    let (save, clear) = footer(ui);
+    if save {
+        finish(out, FormKind::Invoice, build_invoice(c, f));
+    }
+    if clear {
+        *f = InvoiceForm::default();
+    }
+}
+
+fn set_due_from_terms(c: &Company, f: &mut InvoiceForm) {
+    let terms = f.customer.and_then(|id| c.customer(id)).map(|x| x.contact.terms_days);
+    if let (Some(terms), Ok(date)) = (terms, Date::parse(&f.date)) {
+        f.due = date.add_days(i64::from(terms)).to_string();
+    }
+}
+
+fn build_invoice(c: &Company, f: &InvoiceForm) -> Result<Command, String> {
+    let customer = f.customer.ok_or("Choose a customer")?;
+    let date = parse_date("Date", &f.date)?;
+    let due_date = if f.due.trim().is_empty() { date } else { parse_date("Due date", &f.due)? };
+    let ar_account = c
+        .first_account_of(AccountType::AccountsReceivable)
+        .ok_or("Add an Accounts Receivable account first")?;
+    let mut lines = Vec::new();
+    for (i, l) in f.lines.iter().enumerate().filter(|(_, l)| !l.is_blank()) {
+        let n = i + 1;
+        let account = l.account.ok_or_else(|| format!("Line {n}: choose an income account"))?;
+        let qty = if l.qty.trim().is_empty() {
+            Qty::ONE
+        } else {
+            Qty::parse(&l.qty).map_err(|e| format!("Line {n}: {e}"))?
+        };
+        let rate = Money::parse(&l.rate).map_err(|e| format!("Line {n}: {e}"))?;
+        lines.push(SalesLine { item: l.item, description: l.description.clone(), qty, rate, account });
+    }
+    let number = if f.number.trim().is_empty() {
+        widgets::next_number(c, 1001, |b| matches!(b, TxnBody::Invoice(_)))
+    } else {
+        f.number.clone()
+    };
+    Ok(Command::TxnPost {
+        date,
+        number,
+        memo: f.memo.clone(),
+        body: TxnBody::Invoice(Invoice { customer, due_date, ar_account, lines }),
+    })
+}
+
+// ----- receive payment / pay bills --------------------------------------------
+
+pub(crate) fn receive_payment(ui: &mut Ui, c: &Company, f: &mut PaymentForm, out: &mut Vec<Action>) {
+    header(ui, FormKind::ReceivePayment);
+    if f.account.is_none() {
+        f.account = c
+            .account_by_name("Undeposited Funds")
+            .filter(|a| a.active && a.kind == AccountType::OtherCurrentAsset)
+            .map(|a| a.id)
+            .or_else(|| c.first_account_of(AccountType::Bank));
+    }
+    egui::Grid::new("rp_head").num_columns(4).spacing([12.0, 6.0]).show(ui, |ui| {
+        ui.label("Received from");
+        if widgets::customer_combo(ui, "rp_customer", c, &mut f.customer) {
+            f.amounts.clear();
+        }
+        ui.label("Date");
+        field(ui, &mut f.date, 110.0, "YYYY-MM-DD");
+        ui.end_row();
+        ui.label("Deposit to");
+        widgets::account_combo(ui, "rp_deposit", c, &mut f.account, |k| {
+            matches!(k, AccountType::Bank | AccountType::OtherCurrentAsset)
+        });
+        ui.label("Method / ref");
+        field(ui, &mut f.method, 140.0, "Check #, ACH, card…");
+        ui.end_row();
+    });
+    let docs: Vec<OpenDoc> = match f.customer {
+        Some(id) => c
+            .open_invoices(id)
+            .into_iter()
+            .map(|(t, open)| {
+                let (due, total) = match &t.body {
+                    TxnBody::Invoice(i) => (i.due_date, i.total().unwrap_or(Money::ZERO)),
+                    _ => (t.date, Money::ZERO),
+                };
+                OpenDoc { id: t.id, number: t.number.clone(), date: t.date, due, total, open }
+            })
+            .collect(),
+        None => Vec::new(),
+    };
+    let total = open_docs_grid(ui, "rp_docs", &docs, &mut f.amounts);
+    ui.horizontal(|ui| {
+        ui.label("Memo");
+        field(ui, &mut f.memo, 360.0, "");
+    });
+    total_row(ui, "Amount received", total);
+    let (save, clear) = footer(ui);
+    if save {
+        finish(out, FormKind::ReceivePayment, build_receive(c, f, total));
+    }
+    if clear {
+        *f = PaymentForm::default();
+    }
+}
+
+pub(crate) fn pay_bills(ui: &mut Ui, c: &Company, f: &mut PaymentForm, out: &mut Vec<Action>) {
+    header(ui, FormKind::PayBills);
+    if f.account.is_none() {
+        f.account = c.first_account_of(AccountType::Bank);
+    }
+    egui::Grid::new("pb_head").num_columns(4).spacing([12.0, 6.0]).show(ui, |ui| {
+        ui.label("Pay to");
+        if widgets::vendor_combo(ui, "pb_vendor", c, &mut f.vendor) {
+            f.amounts.clear();
+        }
+        ui.label("Date");
+        field(ui, &mut f.date, 110.0, "YYYY-MM-DD");
+        ui.end_row();
+        ui.label("Pay from");
+        widgets::account_combo(ui, "pb_from", c, &mut f.account, |k| {
+            matches!(k, AccountType::Bank | AccountType::CreditCard)
+        });
+        ui.label("Check #");
+        let hint = widgets::next_number(c, 1001, |b| matches!(b, TxnBody::Check(_) | TxnBody::PayBill(_)));
+        field(ui, &mut f.number, 100.0, &hint);
+        ui.end_row();
+    });
+    let docs: Vec<OpenDoc> = match f.vendor {
+        Some(id) => c
+            .open_bills(id)
+            .into_iter()
+            .map(|(t, open)| {
+                let (due, total) = match &t.body {
+                    TxnBody::Bill(b) => (b.due_date, b.total().unwrap_or(Money::ZERO)),
+                    _ => (t.date, Money::ZERO),
+                };
+                OpenDoc { id: t.id, number: t.number.clone(), date: t.date, due, total, open }
+            })
+            .collect(),
+        None => Vec::new(),
+    };
+    let total = open_docs_grid(ui, "pb_docs", &docs, &mut f.amounts);
+    ui.horizontal(|ui| {
+        ui.label("Memo");
+        field(ui, &mut f.memo, 360.0, "");
+    });
+    total_row(ui, "Payment total", total);
+    let (save, clear) = footer(ui);
+    if save {
+        finish(out, FormKind::PayBills, build_pay_bills(c, f, total));
+    }
+    if clear {
+        *f = PaymentForm::default();
+    }
+}
+
+/// An open invoice or bill shown on a payment form.
+struct OpenDoc {
+    id: TxnId,
+    number: String,
+    date: Date,
+    due: Date,
+    total: Money,
+    open: Money,
+}
+
+/// Lists open documents with a payment field each. Returns the payment total.
+fn open_docs_grid(
+    ui: &mut Ui,
+    salt: &str,
+    docs: &[OpenDoc],
+    amounts: &mut BTreeMap<TxnId, String>,
+) -> Money {
+    ui.add_space(8.0);
+    if docs.is_empty() {
+        ui.label(RichText::new("Nothing open.").color(theme::MUTED));
+        ui.add_space(8.0);
+        return Money::ZERO;
+    }
+    if ui.button("Pay all open").clicked() {
+        for doc in docs {
+            amounts.insert(doc.id, doc.open.to_plain_string());
+        }
+    }
+    let mut total = Money::ZERO;
+    egui::Grid::new(salt).striped(true).spacing([14.0, 4.0]).show(ui, |ui| {
+        for h in ["Date", "Number", "Due", "Original", "Open", "Payment"] {
+            ui.label(RichText::new(h).strong());
+        }
+        ui.end_row();
+        for doc in docs {
+            ui.label(doc.date.to_string());
+            ui.label(doc.number.as_str());
+            ui.label(doc.due.to_string());
+            money_label(ui, doc.total, false);
+            money_label(ui, doc.open, false);
+            let text = amounts.entry(doc.id).or_default();
+            field(ui, text, 90.0, "0.00");
+            if let Ok(m) = Money::parse(text) {
+                total = total.saturating_add(m);
+            }
+            ui.end_row();
+        }
+    });
+    ui.add_space(8.0);
+    total
+}
+
+fn applications(amounts: &BTreeMap<TxnId, String>) -> Result<Vec<Applied>, String> {
+    let mut out = Vec::new();
+    for (txn, text) in amounts {
+        if text.trim().is_empty() {
+            continue;
+        }
+        let amount = Money::parse(text).map_err(|e| e.to_string())?;
+        if !amount.is_zero() {
+            out.push(Applied { txn: *txn, amount });
+        }
+    }
+    Ok(out)
+}
+
+fn build_receive(c: &Company, f: &PaymentForm, amount: Money) -> Result<Command, String> {
+    let customer = f.customer.ok_or("Choose a customer")?;
+    let deposit_to = f.account.ok_or("Choose where to deposit the payment")?;
+    let ar_account = c
+        .first_account_of(AccountType::AccountsReceivable)
+        .ok_or("Add an Accounts Receivable account first")?;
+    Ok(Command::TxnPost {
+        date: parse_date("Date", &f.date)?,
+        number: f.number.clone(),
+        memo: f.memo.clone(),
+        body: TxnBody::ReceivePayment(ReceivePayment {
+            customer,
+            deposit_to,
+            ar_account,
+            amount,
+            method: f.method.clone(),
+            applied: applications(&f.amounts)?,
+        }),
+    })
+}
+
+fn build_pay_bills(c: &Company, f: &PaymentForm, amount: Money) -> Result<Command, String> {
+    let vendor = f.vendor.ok_or("Choose a vendor")?;
+    let pay_from = f.account.ok_or("Choose the account to pay from")?;
+    let ap_account = c
+        .first_account_of(AccountType::AccountsPayable)
+        .ok_or("Add an Accounts Payable account first")?;
+    let number = if f.number.trim().is_empty() {
+        widgets::next_number(c, 1001, |b| matches!(b, TxnBody::Check(_) | TxnBody::PayBill(_)))
+    } else {
+        f.number.clone()
+    };
+    Ok(Command::TxnPost {
+        date: parse_date("Date", &f.date)?,
+        number,
+        memo: f.memo.clone(),
+        body: TxnBody::PayBill(PayBill {
+            vendor,
+            pay_from,
+            ap_account,
+            amount,
+            applied: applications(&f.amounts)?,
+        }),
+    })
+}
+
+// ----- bill / check / deposit -----------------------------------------------------
+
+fn account_lines(ui: &mut Ui, salt: &str, c: &Company, lines: &mut Vec<AccountLineInput>) -> Money {
+    let mut remove = None;
+    let mut total = Money::ZERO;
+    egui::Grid::new(salt).striped(true).spacing([8.0, 4.0]).show(ui, |ui| {
+        for h in ["Account", "Description", "Amount", ""] {
+            ui.label(RichText::new(h).strong());
+        }
+        ui.end_row();
+        for (i, line) in lines.iter_mut().enumerate() {
+            widgets::account_combo(ui, (salt, "acct", i), c, &mut line.account, |k| !k.needs_party());
+            field(ui, &mut line.description, 260.0, "");
+            field(ui, &mut line.amount, 90.0, "0.00");
+            if let Ok(m) = Money::parse(&line.amount) {
+                total = total.saturating_add(m);
+            }
+            if ui.small_button("✕").on_hover_text("Remove line").clicked() {
+                remove = Some(i);
+            }
+            ui.end_row();
+        }
+    });
+    if let Some(i) = remove {
+        if i < lines.len() {
+            lines.remove(i);
+        }
+    }
+    if ui.button("+ Add line").clicked() {
+        lines.push(AccountLineInput::default());
+    }
+    total
+}
+
+fn build_lines(lines: &[AccountLineInput]) -> Result<Vec<AccountLine>, String> {
+    let mut out = Vec::new();
+    for (i, l) in lines.iter().enumerate() {
+        if l.account.is_none() && l.amount.trim().is_empty() && l.description.trim().is_empty() {
+            continue;
+        }
+        let n = i + 1;
+        let account = l.account.ok_or_else(|| format!("Line {n}: choose an account"))?;
+        let amount = Money::parse(&l.amount).map_err(|e| format!("Line {n}: {e}"))?;
+        out.push(AccountLine { account, description: l.description.clone(), amount });
+    }
+    Ok(out)
+}
+
+pub(crate) fn bill(ui: &mut Ui, c: &Company, f: &mut LinesForm, out: &mut Vec<Action>) {
+    header(ui, FormKind::Bill);
+    egui::Grid::new("bill_head").num_columns(4).spacing([12.0, 6.0]).show(ui, |ui| {
+        ui.label("Vendor");
+        let changed = widgets::vendor_combo(ui, "bill_vendor", c, &mut f.vendor);
+        ui.label("Ref no.");
+        field(ui, &mut f.number, 120.0, "vendor's invoice #");
+        ui.end_row();
+        ui.label("Date");
+        let date_changed = field(ui, &mut f.date, 110.0, "YYYY-MM-DD").changed();
+        ui.label("Due date");
+        field(ui, &mut f.due, 110.0, "from terms");
+        ui.end_row();
+        if changed || date_changed {
+            let terms = f.vendor.and_then(|id| c.vendor(id)).map(|v| v.contact.terms_days);
+            if let (Some(t), Ok(d)) = (terms, Date::parse(&f.date)) {
+                f.due = d.add_days(i64::from(t)).to_string();
+            }
+        }
+    });
+    ui.add_space(8.0);
+    let total = account_lines(ui, "bill_lines", c, &mut f.lines);
+    ui.horizontal(|ui| {
+        ui.label("Memo");
+        field(ui, &mut f.memo, 360.0, "");
+    });
+    total_row(ui, "Amount due", total);
+    let (save, clear) = footer(ui);
+    if save {
+        finish(out, FormKind::Bill, build_bill(c, f));
+    }
+    if clear {
+        *f = LinesForm::default();
+    }
+}
+
+fn build_bill(c: &Company, f: &LinesForm) -> Result<Command, String> {
+    let vendor = f.vendor.ok_or("Choose a vendor")?;
+    let date = parse_date("Date", &f.date)?;
+    let due_date = if f.due.trim().is_empty() { date } else { parse_date("Due date", &f.due)? };
+    let ap_account = c
+        .first_account_of(AccountType::AccountsPayable)
+        .ok_or("Add an Accounts Payable account first")?;
+    Ok(Command::TxnPost {
+        date,
+        number: f.number.clone(),
+        memo: f.memo.clone(),
+        body: TxnBody::Bill(Bill { vendor, due_date, ap_account, lines: build_lines(&f.lines)? }),
+    })
+}
+
+pub(crate) fn check(ui: &mut Ui, c: &Company, f: &mut LinesForm, out: &mut Vec<Action>) {
+    header(ui, FormKind::Check);
+    if f.account.is_none() {
+        f.account = c.first_account_of(AccountType::Bank);
+    }
+    egui::Grid::new("chk_head").num_columns(4).spacing([12.0, 6.0]).show(ui, |ui| {
+        ui.label("Pay from");
+        widgets::account_combo(ui, "chk_from", c, &mut f.account, |k| {
+            matches!(k, AccountType::Bank | AccountType::CreditCard)
+        });
+        ui.label("Check #");
+        let hint = widgets::next_number(c, 1001, |b| matches!(b, TxnBody::Check(_) | TxnBody::PayBill(_)));
+        field(ui, &mut f.number, 100.0, &hint);
+        ui.end_row();
+        ui.label("Payee");
+        widgets::party_combo(ui, "chk_payee", c, &mut f.payee);
+        ui.label("Date");
+        field(ui, &mut f.date, 110.0, "YYYY-MM-DD");
+        ui.end_row();
+    });
+    ui.add_space(8.0);
+    let total = account_lines(ui, "chk_lines", c, &mut f.lines);
+    ui.horizontal(|ui| {
+        ui.label("Memo");
+        field(ui, &mut f.memo, 360.0, "");
+    });
+    total_row(ui, "Amount", total);
+    let (save, clear) = footer(ui);
+    if save {
+        finish(out, FormKind::Check, build_check(c, f));
+    }
+    if clear {
+        *f = LinesForm::default();
+    }
+}
+
+fn build_check(c: &Company, f: &LinesForm) -> Result<Command, String> {
+    let pay_from = f.account.ok_or("Choose the account to pay from")?;
+    let is_bank = c.account(pay_from).is_some_and(|a| a.kind == AccountType::Bank);
+    let number = if f.number.trim().is_empty() && is_bank {
+        widgets::next_number(c, 1001, |b| matches!(b, TxnBody::Check(_) | TxnBody::PayBill(_)))
+    } else {
+        f.number.clone()
+    };
+    Ok(Command::TxnPost {
+        date: parse_date("Date", &f.date)?,
+        number,
+        memo: f.memo.clone(),
+        body: TxnBody::Check(Check { payee: f.payee, pay_from, lines: build_lines(&f.lines)? }),
+    })
+}
+
+pub(crate) fn deposit(ui: &mut Ui, c: &Company, f: &mut LinesForm, out: &mut Vec<Action>) {
+    header(ui, FormKind::Deposit);
+    if f.account.is_none() {
+        f.account = c.first_account_of(AccountType::Bank);
+    }
+    egui::Grid::new("dep_head").num_columns(4).spacing([12.0, 6.0]).show(ui, |ui| {
+        ui.label("Deposit to");
+        widgets::account_combo(ui, "dep_to", c, &mut f.account, |k| k == AccountType::Bank);
+        ui.label("Date");
+        field(ui, &mut f.date, 110.0, "YYYY-MM-DD");
+        ui.end_row();
+    });
+    // Offer payments waiting in Undeposited Funds.
+    if let Some(uf) = c.account_by_name("Undeposited Funds") {
+        let waiting = c.account_balance(uf.id, None);
+        if waiting.is_positive() {
+            ui.horizontal(|ui| {
+                ui.label(format!("{waiting} is waiting in Undeposited Funds."));
+                if ui.button("Add it to this deposit").clicked() {
+                    f.lines.retain(|l| l.account.is_some() || !l.amount.trim().is_empty());
+                    f.lines.push(AccountLineInput {
+                        account: Some(uf.id),
+                        description: "Payments received".into(),
+                        amount: waiting.to_plain_string(),
+                    });
+                }
+            });
+        }
+    }
+    ui.add_space(8.0);
+    let total = account_lines(ui, "dep_lines", c, &mut f.lines);
+    ui.horizontal(|ui| {
+        ui.label("Memo");
+        field(ui, &mut f.memo, 360.0, "");
+    });
+    total_row(ui, "Deposit total", total);
+    let (save, clear) = footer(ui);
+    if save {
+        finish(out, FormKind::Deposit, build_deposit(f));
+    }
+    if clear {
+        *f = LinesForm::default();
+    }
+}
+
+fn build_deposit(f: &LinesForm) -> Result<Command, String> {
+    let deposit_to = f.account.ok_or("Choose the bank account")?;
+    Ok(Command::TxnPost {
+        date: parse_date("Date", &f.date)?,
+        number: f.number.clone(),
+        memo: f.memo.clone(),
+        body: TxnBody::Deposit(Deposit { deposit_to, lines: build_lines(&f.lines)? }),
+    })
+}
+
+// ----- journal entry ------------------------------------------------------------------
+
+pub(crate) fn journal(ui: &mut Ui, c: &Company, f: &mut JournalForm, out: &mut Vec<Action>) {
+    header(ui, FormKind::Journal);
+    ui.horizontal(|ui| {
+        ui.label("Date");
+        field(ui, &mut f.date, 110.0, "YYYY-MM-DD");
+        ui.label("Entry #");
+        field(ui, &mut f.number, 80.0, "");
+    });
+    ui.add_space(8.0);
+    let mut remove = None;
+    let mut debits = Money::ZERO;
+    let mut credits = Money::ZERO;
+    egui::Grid::new("je_lines").striped(true).spacing([8.0, 4.0]).show(ui, |ui| {
+        for h in ["Account", "Debit", "Credit", "Memo", "Name", ""] {
+            ui.label(RichText::new(h).strong());
+        }
+        ui.end_row();
+        for (i, line) in f.lines.iter_mut().enumerate() {
+            widgets::account_combo(ui, ("je_acct", i), c, &mut line.account, |_| true);
+            field(ui, &mut line.debit, 90.0, "");
+            field(ui, &mut line.credit, 90.0, "");
+            field(ui, &mut line.memo, 180.0, "");
+            widgets::party_combo(ui, ("je_party", i), c, &mut line.party);
+            debits = debits.saturating_add(Money::parse_or_zero(&line.debit).unwrap_or(Money::ZERO));
+            credits = credits.saturating_add(Money::parse_or_zero(&line.credit).unwrap_or(Money::ZERO));
+            if ui.small_button("✕").on_hover_text("Remove line").clicked() {
+                remove = Some(i);
+            }
+            ui.end_row();
+        }
+    });
+    if let Some(i) = remove {
+        if i < f.lines.len() {
+            f.lines.remove(i);
+        }
+    }
+    if ui.button("+ Add line").clicked() {
+        f.lines.push(JournalLineInput::default());
+    }
+    ui.horizontal(|ui| {
+        ui.label("Memo");
+        field(ui, &mut f.memo, 360.0, "");
+    });
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(format!("Debits {debits}   Credits {credits}")).strong());
+        let diff = debits.saturating_sub(credits);
+        if diff.is_zero() {
+            ui.label(RichText::new("Balanced").color(theme::POSITIVE));
+        } else {
+            ui.label(RichText::new(format!("Out of balance by {}", diff.abs())).color(theme::NEGATIVE));
+        }
+    });
+    let (save, clear) = footer(ui);
+    if save {
+        finish(out, FormKind::Journal, build_journal(f));
+    }
+    if clear {
+        *f = JournalForm::default();
+    }
+}
+
+fn build_journal(f: &JournalForm) -> Result<Command, String> {
+    let mut lines = Vec::new();
+    for (i, l) in f.lines.iter().enumerate() {
+        if l.account.is_none() && l.debit.trim().is_empty() && l.credit.trim().is_empty() {
+            continue;
+        }
+        let n = i + 1;
+        let account = l.account.ok_or_else(|| format!("Line {n}: choose an account"))?;
+        let debit = Money::parse_or_zero(&l.debit).map_err(|e| format!("Line {n}: {e}"))?;
+        let credit = Money::parse_or_zero(&l.credit).map_err(|e| format!("Line {n}: {e}"))?;
+        lines.push(JournalLine { account, debit, credit, memo: l.memo.clone(), party: l.party });
+    }
+    Ok(Command::TxnPost {
+        date: parse_date("Date", &f.date)?,
+        number: f.number.clone(),
+        memo: f.memo.clone(),
+        body: TxnBody::Journal(JournalEntry { lines }),
+    })
+}

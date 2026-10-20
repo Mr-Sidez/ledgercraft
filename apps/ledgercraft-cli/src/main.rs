@@ -1,0 +1,148 @@
+//! `ledgercraft-cli`: drive a company file without the GUI. Every change goes
+//! through the same engine commands the desktop app uses.
+
+use std::path::{Path, PathBuf};
+use std::process::ExitCode;
+
+use ledgercraft_core::Date;
+use ledgercraft_engine::{new_company, sample_company, Session, CATALOG};
+use ledgercraft_reports::ReportKind;
+
+const USAGE: &str = "\
+usage:
+  ledgercraft-cli new FILE [--name NAME] [--sample]
+  ledgercraft-cli run FILE --cmd JSON [--cmd JSON ...]
+  ledgercraft-cli report FILE KIND [--from DATE] [--to DATE] [--csv]
+  ledgercraft-cli accounts FILE
+  ledgercraft-cli commands
+  ledgercraft-cli --version
+
+report KIND is one of: pl, balance-sheet, trial-balance, ar-aging, ap-aging, transactions
+dates are YYYY-MM-DD; --to is also the \"as of\" date
+
+example:
+  ledgercraft-cli run books.lcbooks --cmd '{\"command\":\"account.create\",\"number\":\"6700\",\"name\":\"Postage\",\"kind\":\"expense\"}'";
+
+fn main() -> ExitCode {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    match run(&args) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("ledgercraft-cli: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn flag_value(args: &[String], flag: &str) -> Option<String> {
+    args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1)).cloned()
+}
+
+fn run(args: &[String]) -> Result<(), String> {
+    let Some(sub) = args.first() else {
+        println!("{USAGE}");
+        return Ok(());
+    };
+    let rest = args.get(1..).unwrap_or_default();
+    match sub.as_str() {
+        "--version" | "-V" => {
+            println!("ledgercraft-cli {}", env!("CARGO_PKG_VERSION"));
+            Ok(())
+        }
+        "help" | "--help" | "-h" => {
+            println!("{USAGE}");
+            Ok(())
+        }
+        "commands" => {
+            for c in CATALOG {
+                println!("{:<28} {}", c.id, c.summary);
+            }
+            Ok(())
+        }
+        "new" => {
+            let file = rest.first().ok_or("new: which file?")?;
+            let path = ledgercraft_file::with_extension(Path::new(file));
+            if path.exists() {
+                return Err(format!("{} already exists; refusing to overwrite it", path.display()));
+            }
+            let company = if rest.iter().any(|a| a == "--sample") {
+                sample_company().map_err(|e| e.to_string())?
+            } else {
+                let name = flag_value(rest, "--name").unwrap_or_else(|| "My Company".into());
+                new_company(&name)
+            };
+            ledgercraft_file::save(&path, &company).map_err(|e| e.to_string())?;
+            println!("created {}", path.display());
+            Ok(())
+        }
+        "run" => {
+            let file = rest.first().ok_or("run: which file?")?;
+            let mut session = open(file)?;
+            let mut ran = 0;
+            let mut i = 1;
+            while let Some(arg) = rest.get(i) {
+                if arg != "--cmd" {
+                    return Err(format!("unexpected argument {arg:?}"));
+                }
+                let json = rest.get(i + 1).ok_or("--cmd needs a JSON command")?;
+                let outcome = session.execute_json(json).map_err(|e| e.to_string())?;
+                match outcome.created {
+                    Some(id) => println!("{}: created {id}", outcome.command),
+                    None => println!("{}: done", outcome.command),
+                }
+                ran += 1;
+                i += 2;
+            }
+            if ran == 0 {
+                return Err("run: give at least one --cmd".into());
+            }
+            // All-or-nothing: we only get here if every command succeeded,
+            // so a failing command never leaves the file half-changed.
+            session.save().map_err(|e| e.to_string())
+        }
+        "report" => {
+            let file = rest.first().ok_or("report: which file?")?;
+            let kind_id = rest.get(1).ok_or("report: which report?")?;
+            let kind = ReportKind::from_cli_id(kind_id)
+                .ok_or_else(|| format!("unknown report {kind_id:?}"))?;
+            let session = open(file)?;
+            let to = match flag_value(rest, "--to") {
+                Some(s) => Date::parse(&s).map_err(|e| e.to_string())?,
+                None => Date::today(),
+            };
+            let from = match flag_value(rest, "--from") {
+                Some(s) => Date::parse(&s).map_err(|e| e.to_string())?,
+                None => to.fiscal_year_start(session.company().info.fiscal_year_start_month),
+            };
+            let report = kind.build(session.company(), from, to);
+            if rest.iter().any(|a| a == "--csv") {
+                print!("{}", report.to_csv());
+            } else {
+                print!("{}", report.to_text());
+            }
+            Ok(())
+        }
+        "accounts" => {
+            let file = rest.first().ok_or("accounts: which file?")?;
+            let session = open(file)?;
+            let c = session.company();
+            for a in c.sorted_accounts() {
+                println!(
+                    "{:<6} {:<6} {:<32} {:<24} {:>16}",
+                    a.id.to_string(),
+                    a.number,
+                    a.name,
+                    a.kind.label(),
+                    c.account_balance(a.id, None).to_string()
+                );
+            }
+            Ok(())
+        }
+        other => Err(format!("unknown command {other:?}\n\n{USAGE}")),
+    }
+}
+
+fn open(file: &str) -> Result<Session, String> {
+    let path = PathBuf::from(file);
+    Session::open(&path).map_err(|e| format!("{}: {e}", path.display()))
+}

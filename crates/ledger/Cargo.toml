@@ -1,0 +1,19 @@
+[package]
+name = "ledgercraft-ledger"
+description = "L1 of LedgerCraft: the company file model, double-entry posting and validation"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+ledgercraft-core.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true

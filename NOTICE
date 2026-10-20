@@ -1,0 +1,18 @@
+LedgerCraft
+Copyright (c) 2026 Jeffrey Parke and the LedgerCraft contributors
+
+Licensed under the MIT license or the Apache License, Version 2.0, at your
+option. See LICENSE-MIT and LICENSE-APACHE.
+
+Third-party material
+None: every bundled asset is original to LedgerCraft. The default chart of
+accounts, the sample company "Pine Ridge Woodworks" and all UI text were
+written for this project. Rust dependencies are fetched by Cargo under their
+own licenses (see Cargo.lock and `cargo about` / `cargo deny` output).
+
+Trademarks
+QuickBooks and Intuit are trademarks or registered trademarks of Intuit Inc.
+in the United States and/or other countries. LedgerCraft is an independent,
+open-source project and is not affiliated with, sponsored by or endorsed by
+Intuit Inc.; these names are used only to describe the workflows LedgerCraft
+is compatible with.

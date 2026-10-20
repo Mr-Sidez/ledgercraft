@@ -1,0 +1,539 @@
+//! The list and overview pages: Home, Chart of Accounts, Customers, Vendors,
+//! Items, Transactions, Reports and account registers.
+
+use eframe::egui::{self, RichText, Ui};
+use ledgercraft_core::{Date, Money};
+use ledgercraft_engine::Command;
+use ledgercraft_ledger::{
+    AccountId, AccountType, Address, Company, Contact, ItemKind, ItemSpec, TxnId,
+};
+use ledgercraft_reports::{account_register, ReportKind};
+
+use crate::widgets::{self, field, money_label};
+use crate::{theme, Action, FormKind, Page, Reset};
+
+// ----- state ----------------------------------------------------------------
+
+pub(crate) struct NewAccount {
+    pub number: String,
+    pub name: String,
+    pub kind: AccountType,
+    pub description: String,
+}
+
+impl Default for NewAccount {
+    fn default() -> Self {
+        Self { number: String::new(), name: String::new(), kind: AccountType::Expense, description: String::new() }
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct ContactInput {
+    pub name: String,
+    pub company: String,
+    pub email: String,
+    pub phone: String,
+    pub line1: String,
+    pub city: String,
+    pub region: String,
+    pub postal_code: String,
+    pub terms: String,
+}
+
+impl ContactInput {
+    fn build(&self) -> Result<Contact, String> {
+        let terms_days = if self.terms.trim().is_empty() {
+            0
+        } else {
+            self.terms
+                .trim()
+                .parse::<u32>()
+                .map_err(|_| "Terms must be a whole number of days".to_string())?
+        };
+        Ok(Contact {
+            name: self.name.trim().to_string(),
+            company: self.company.trim().to_string(),
+            email: self.email.trim().to_string(),
+            phone: self.phone.trim().to_string(),
+            address: Address {
+                line1: self.line1.trim().to_string(),
+                city: self.city.trim().to_string(),
+                region: self.region.trim().to_string(),
+                postal_code: self.postal_code.trim().to_string(),
+                ..Address::default()
+            },
+            terms_days,
+            notes: String::new(),
+        })
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct NewItem {
+    pub name: String,
+    pub description: String,
+    pub kind: ItemKind,
+    pub rate: String,
+    pub account: Option<AccountId>,
+}
+
+#[derive(Default)]
+pub(crate) struct ListState {
+    pub new_account: NewAccount,
+    pub new_customer: ContactInput,
+    pub new_vendor: ContactInput,
+    pub new_item: NewItem,
+    pub show_inactive: bool,
+}
+
+impl ListState {
+    pub(crate) fn reset(&mut self, what: Reset) {
+        match what {
+            Reset::NewAccount => self.new_account = NewAccount::default(),
+            Reset::NewCustomer => self.new_customer = ContactInput::default(),
+            Reset::NewVendor => self.new_vendor = ContactInput::default(),
+            Reset::NewItem => self.new_item = NewItem::default(),
+            Reset::Nothing | Reset::Form(_) => {}
+        }
+    }
+}
+
+pub(crate) struct ReportState {
+    pub kind: ReportKind,
+    pub from: String,
+    pub to: String,
+}
+
+impl Default for ReportState {
+    fn default() -> Self {
+        let today = Date::today();
+        let start = Date::from_ymd(today.year(), 1, 1).unwrap_or(today);
+        Self { kind: ReportKind::ProfitAndLoss, from: start.to_string(), to: today.to_string() }
+    }
+}
+
+fn title(ui: &mut Ui, text: &str) {
+    ui.label(RichText::new(text).heading().color(theme::ACCENT));
+    ui.add_space(6.0);
+}
+
+// ----- home -------------------------------------------------------------------
+
+fn flow_button(ui: &mut Ui, label: &str, page: Page, out: &mut Vec<Action>) {
+    let button = egui::Button::new(RichText::new(label).size(15.0)).min_size(egui::vec2(150.0, 44.0));
+    if ui.add(button).clicked() {
+        out.push(Action::Go(page));
+    }
+}
+
+fn arrow(ui: &mut Ui) {
+    ui.label(RichText::new("→").size(20.0).color(theme::MUTED));
+}
+
+pub(crate) fn home(ui: &mut Ui, c: &Company, out: &mut Vec<Action>) {
+    title(ui, &c.info.name);
+    let balances = widgets::balances(c);
+    let total_of = |kind: AccountType| {
+        c.accounts
+            .iter()
+            .filter(|a| a.kind == kind)
+            .fold(Money::ZERO, |acc, a| acc.saturating_add(balances.get(&a.id).copied().unwrap_or(Money::ZERO)))
+    };
+    let today = Date::today();
+    let fy_start = today.fiscal_year_start(c.info.fiscal_year_start_month);
+    let pl = ledgercraft_reports::profit_and_loss(c, fy_start, today);
+    let net_income = pl
+        .rows
+        .iter()
+        .rev()
+        .find(|r| r.label == "Net Income")
+        .and_then(|r| match r.cells.first() {
+            Some(ledgercraft_reports::Cell::Money(m)) => Some(*m),
+            _ => None,
+        })
+        .unwrap_or(Money::ZERO);
+
+    ui.columns(2, |cols| {
+        if let [left, right] = cols {
+            left.label(RichText::new("Workflow").strong());
+            left.add_space(4.0);
+            left.label(RichText::new("Vendors").color(theme::MUTED));
+            left.horizontal(|ui| {
+                flow_button(ui, "Enter Bills", Page::Form(FormKind::Bill), out);
+                arrow(ui);
+                flow_button(ui, "Pay Bills", Page::Form(FormKind::PayBills), out);
+            });
+            left.add_space(10.0);
+            left.label(RichText::new("Customers").color(theme::MUTED));
+            left.horizontal(|ui| {
+                flow_button(ui, "Create Invoices", Page::Form(FormKind::Invoice), out);
+                arrow(ui);
+                flow_button(ui, "Receive Payments", Page::Form(FormKind::ReceivePayment), out);
+                arrow(ui);
+                flow_button(ui, "Record Deposits", Page::Form(FormKind::Deposit), out);
+            });
+            left.add_space(10.0);
+            left.label(RichText::new("Banking and company").color(theme::MUTED));
+            left.horizontal(|ui| {
+                flow_button(ui, "Write Checks", Page::Form(FormKind::Check), out);
+                flow_button(ui, "Journal Entry", Page::Form(FormKind::Journal), out);
+                flow_button(ui, "Chart of Accounts", Page::Accounts, out);
+            });
+
+            right.label(RichText::new("At a glance").strong());
+            right.add_space(4.0);
+            egui::Grid::new("glance").num_columns(2).spacing([24.0, 6.0]).show(right, |ui| {
+                for a in c.sorted_accounts().into_iter().filter(|a| a.kind == AccountType::Bank && a.active) {
+                    ui.label(a.name.as_str());
+                    money_label(ui, balances.get(&a.id).copied().unwrap_or(Money::ZERO), false);
+                    ui.end_row();
+                }
+                ui.label("Customers owe you");
+                money_label(ui, total_of(AccountType::AccountsReceivable), true);
+                ui.end_row();
+                ui.label("You owe vendors");
+                money_label(ui, total_of(AccountType::AccountsPayable), true);
+                ui.end_row();
+                ui.label("Credit cards");
+                money_label(ui, total_of(AccountType::CreditCard), false);
+                ui.end_row();
+                ui.label(format!("Net income since {fy_start}"));
+                money_label(ui, net_income, true);
+                ui.end_row();
+            });
+        }
+    });
+}
+
+// ----- chart of accounts -----------------------------------------------------------
+
+pub(crate) fn accounts(ui: &mut Ui, c: &Company, s: &mut ListState, out: &mut Vec<Action>) {
+    title(ui, "Chart of Accounts");
+    egui::CollapsingHeader::new("New account").default_open(false).show(ui, |ui| {
+        let n = &mut s.new_account;
+        ui.horizontal(|ui| {
+            field(ui, &mut n.number, 60.0, "Number");
+            field(ui, &mut n.name, 200.0, "Name");
+            egui::ComboBox::from_id_salt("new_acct_kind")
+                .selected_text(n.kind.label())
+                .show_ui(ui, |ui| {
+                    for k in AccountType::ALL {
+                        ui.selectable_value(&mut n.kind, k, k.label());
+                    }
+                });
+            field(ui, &mut n.description, 200.0, "Description");
+            if ui.button("Add").clicked() {
+                out.push(Action::Run {
+                    cmd: Command::AccountCreate {
+                        number: n.number.clone(),
+                        name: n.name.clone(),
+                        kind: n.kind,
+                        description: n.description.clone(),
+                    },
+                    reset: Reset::NewAccount,
+                });
+            }
+        });
+    });
+    ui.checkbox(&mut s.show_inactive, "Show inactive accounts");
+    ui.add_space(6.0);
+    let balances = widgets::balances(c);
+    egui::ScrollArea::vertical().id_salt("accounts_scroll").show(ui, |ui| {
+        egui::Grid::new("accounts").striped(true).spacing([18.0, 4.0]).show(ui, |ui| {
+            for h in ["Number", "Name", "Type", "Balance", ""] {
+                ui.label(RichText::new(h).strong());
+            }
+            ui.end_row();
+            for a in c.sorted_accounts() {
+                if !a.active && !s.show_inactive {
+                    continue;
+                }
+                ui.label(a.number.as_str());
+                let mut name = RichText::new(a.name.as_str());
+                if !a.active {
+                    name = name.color(theme::MUTED).italics();
+                }
+                if ui.link(name).on_hover_text("Open register").clicked() {
+                    out.push(Action::Go(Page::Register(a.id)));
+                }
+                ui.label(a.kind.label());
+                money_label(ui, balances.get(&a.id).copied().unwrap_or(Money::ZERO), false);
+                let toggle = if a.active { "Make inactive" } else { "Make active" };
+                if ui.small_button(toggle).clicked() {
+                    out.push(Action::Run {
+                        cmd: Command::AccountSetActive { id: a.id, active: !a.active },
+                        reset: Reset::Nothing,
+                    });
+                }
+                ui.end_row();
+            }
+        });
+    });
+}
+
+pub(crate) fn register(ui: &mut Ui, c: &Company, account: AccountId, out: &mut Vec<Action>) {
+    if ui.link("← Chart of Accounts").clicked() {
+        out.push(Action::Go(Page::Accounts));
+    }
+    let report = account_register(c, account);
+    widgets::report_view(ui, &report, out);
+}
+
+// ----- customers / vendors -----------------------------------------------------------
+
+fn contact_editor(ui: &mut Ui, salt: &str, n: &mut ContactInput) {
+    egui::Grid::new(salt)
+        .num_columns(4)
+        .spacing([10.0, 4.0])
+        .show(ui, |ui| {
+            ui.label("Name");
+            field(ui, &mut n.name, 200.0, "");
+            ui.label("Company");
+            field(ui, &mut n.company, 200.0, "");
+            ui.end_row();
+            ui.label("Email");
+            field(ui, &mut n.email, 200.0, "");
+            ui.label("Phone");
+            field(ui, &mut n.phone, 200.0, "");
+            ui.end_row();
+            ui.label("Address");
+            field(ui, &mut n.line1, 200.0, "Street");
+            ui.label("City");
+            field(ui, &mut n.city, 200.0, "");
+            ui.end_row();
+            ui.label("State / region");
+            field(ui, &mut n.region, 80.0, "");
+            ui.label("Postal code");
+            field(ui, &mut n.postal_code, 100.0, "");
+            ui.end_row();
+            ui.label("Terms (days)");
+            field(ui, &mut n.terms, 60.0, "30");
+            ui.end_row();
+        });
+}
+
+pub(crate) fn customers(ui: &mut Ui, c: &Company, s: &mut ListState, out: &mut Vec<Action>) {
+    title(ui, "Customers");
+    egui::CollapsingHeader::new("New customer").default_open(c.customers.is_empty()).show(ui, |ui| {
+        contact_editor(ui, "new_customer", &mut s.new_customer);
+        if ui.button("Add customer").clicked() {
+            match s.new_customer.build() {
+                Ok(contact) => out.push(Action::Run { cmd: Command::CustomerCreate { contact }, reset: Reset::NewCustomer }),
+                Err(e) => out.push(Action::Error(e)),
+            }
+        }
+    });
+    ui.add_space(6.0);
+    egui::ScrollArea::vertical().id_salt("customers_scroll").show(ui, |ui| {
+        egui::Grid::new("customers").striped(true).spacing([18.0, 4.0]).show(ui, |ui| {
+            for h in ["Name", "Email", "Phone", "Terms", "Balance", "", ""] {
+                ui.label(RichText::new(h).strong());
+            }
+            ui.end_row();
+            for x in c.customers.iter().filter(|x| x.active || s.show_inactive) {
+                ui.label(x.contact.name.as_str());
+                ui.label(x.contact.email.as_str());
+                ui.label(x.contact.phone.as_str());
+                ui.label(terms_label(x.contact.terms_days));
+                money_label(ui, c.customer_balance(x.id), false);
+                if ui.small_button("Invoice").clicked() {
+                    out.push(Action::InvoiceFor(x.id));
+                }
+                if ui.small_button("Receive payment").clicked() {
+                    out.push(Action::PaymentFrom(x.id));
+                }
+                ui.end_row();
+            }
+        });
+    });
+}
+
+pub(crate) fn vendors(ui: &mut Ui, c: &Company, s: &mut ListState, out: &mut Vec<Action>) {
+    title(ui, "Vendors");
+    egui::CollapsingHeader::new("New vendor").default_open(c.vendors.is_empty()).show(ui, |ui| {
+        contact_editor(ui, "new_vendor", &mut s.new_vendor);
+        if ui.button("Add vendor").clicked() {
+            match s.new_vendor.build() {
+                Ok(contact) => out.push(Action::Run { cmd: Command::VendorCreate { contact }, reset: Reset::NewVendor }),
+                Err(e) => out.push(Action::Error(e)),
+            }
+        }
+    });
+    ui.add_space(6.0);
+    egui::ScrollArea::vertical().id_salt("vendors_scroll").show(ui, |ui| {
+        egui::Grid::new("vendors").striped(true).spacing([18.0, 4.0]).show(ui, |ui| {
+            for h in ["Name", "Email", "Phone", "Terms", "Balance", "", ""] {
+                ui.label(RichText::new(h).strong());
+            }
+            ui.end_row();
+            for x in c.vendors.iter().filter(|x| x.active || s.show_inactive) {
+                ui.label(x.contact.name.as_str());
+                ui.label(x.contact.email.as_str());
+                ui.label(x.contact.phone.as_str());
+                ui.label(terms_label(x.contact.terms_days));
+                money_label(ui, c.vendor_balance(x.id), false);
+                if ui.small_button("Enter bill").clicked() {
+                    out.push(Action::BillFrom(x.id));
+                }
+                if ui.small_button("Pay").clicked() {
+                    out.push(Action::PayVendor(x.id));
+                }
+                ui.end_row();
+            }
+        });
+    });
+}
+
+fn terms_label(days: u32) -> String {
+    if days == 0 {
+        "Due on receipt".into()
+    } else {
+        format!("Net {days}")
+    }
+}
+
+// ----- items -------------------------------------------------------------------------
+
+pub(crate) fn items(ui: &mut Ui, c: &Company, s: &mut ListState, out: &mut Vec<Action>) {
+    title(ui, "Products and Services");
+    egui::CollapsingHeader::new("New item").default_open(c.items.is_empty()).show(ui, |ui| {
+        let n = &mut s.new_item;
+        egui::Grid::new("new_item").num_columns(4).spacing([10.0, 4.0]).show(ui, |ui| {
+            ui.label("Name");
+            field(ui, &mut n.name, 200.0, "");
+            ui.label("Type");
+            egui::ComboBox::from_id_salt("new_item_kind").selected_text(n.kind.label()).show_ui(ui, |ui| {
+                for k in ItemKind::ALL {
+                    ui.selectable_value(&mut n.kind, k, k.label());
+                }
+            });
+            ui.end_row();
+            ui.label("Description");
+            field(ui, &mut n.description, 200.0, "");
+            ui.label("Rate");
+            field(ui, &mut n.rate, 90.0, "0.00");
+            ui.end_row();
+            ui.label("Income account");
+            widgets::account_combo(ui, "new_item_acct", c, &mut n.account, |k| {
+                matches!(k, AccountType::Income | AccountType::OtherIncome)
+            });
+            ui.end_row();
+        });
+        if ui.button("Add item").clicked() {
+            let built = match (n.account, Money::parse_or_zero(&n.rate)) {
+                (None, _) => Err("Choose an income account".to_string()),
+                (_, Err(e)) => Err(e.to_string()),
+                (Some(income_account), Ok(rate)) => Ok(ItemSpec {
+                    name: n.name.trim().to_string(),
+                    description: n.description.clone(),
+                    kind: n.kind,
+                    rate,
+                    income_account,
+                }),
+            };
+            match built {
+                Ok(spec) => out.push(Action::Run { cmd: Command::ItemCreate { spec }, reset: Reset::NewItem }),
+                Err(e) => out.push(Action::Error(e)),
+            }
+        }
+    });
+    ui.add_space(6.0);
+    egui::Grid::new("items").striped(true).spacing([18.0, 4.0]).show(ui, |ui| {
+        for h in ["Name", "Type", "Description", "Rate", "Income account"] {
+            ui.label(RichText::new(h).strong());
+        }
+        ui.end_row();
+        for x in c.items.iter().filter(|x| x.active) {
+            ui.label(x.spec.name.as_str());
+            ui.label(x.spec.kind.label());
+            ui.label(x.spec.description.as_str());
+            money_label(ui, x.spec.rate, false);
+            ui.label(c.account_name(x.spec.income_account));
+            ui.end_row();
+        }
+    });
+}
+
+// ----- transactions -------------------------------------------------------------------
+
+pub(crate) fn transactions(ui: &mut Ui, c: &Company, out: &mut Vec<Action>) {
+    title(ui, "Transactions");
+    let mut txns: Vec<_> = c.transactions.iter().collect();
+    txns.sort_by_key(|t| std::cmp::Reverse((t.date, t.id)));
+    egui::ScrollArea::vertical().id_salt("txn_scroll").show(ui, |ui| {
+        egui::Grid::new("txns").striped(true).spacing([16.0, 4.0]).show(ui, |ui| {
+            for h in ["Date", "Type", "Num", "Name", "Memo", "Amount", ""] {
+                ui.label(RichText::new(h).strong());
+            }
+            ui.end_row();
+            for t in txns {
+                let muted = |s: String| {
+                    if t.voided {
+                        RichText::new(s).color(theme::MUTED).strikethrough()
+                    } else {
+                        RichText::new(s)
+                    }
+                };
+                ui.label(muted(t.date.to_string()));
+                ui.label(muted(t.body.label().to_string()));
+                ui.label(muted(t.number.clone()));
+                ui.label(muted(t.body.party().map(|p| c.party_name(p)).unwrap_or_default()));
+                ui.label(muted(t.memo.clone()));
+                money_label(ui, t.body.total().unwrap_or(Money::ZERO), false);
+                if t.voided {
+                    ui.label(RichText::new("VOID").color(theme::NEGATIVE));
+                } else if ui.small_button("Void").on_hover_text("Void keeps the record but removes its effect").clicked() {
+                    out.push(void(t.id));
+                }
+                ui.end_row();
+            }
+        });
+    });
+}
+
+fn void(id: TxnId) -> Action {
+    Action::Run { cmd: Command::TxnVoid { id }, reset: Reset::Nothing }
+}
+
+// ----- reports ----------------------------------------------------------------------------
+
+pub(crate) fn reports(ui: &mut Ui, c: &Company, s: &mut ReportState, out: &mut Vec<Action>) {
+    ui.horizontal_wrapped(|ui| {
+        for k in ReportKind::ALL {
+            ui.selectable_value(&mut s.kind, k, k.label());
+        }
+    });
+    ui.horizontal(|ui| {
+        if s.kind.uses_period() {
+            ui.label("From");
+            field(ui, &mut s.from, 110.0, "YYYY-MM-DD");
+            ui.label("To");
+        } else {
+            ui.label("As of");
+        }
+        field(ui, &mut s.to, 110.0, "YYYY-MM-DD");
+        if ui.button("This year").clicked() {
+            let today = Date::today();
+            s.from = today.fiscal_year_start(c.info.fiscal_year_start_month).to_string();
+            s.to = today.to_string();
+        }
+        if ui.button("This month").clicked() {
+            let today = Date::today();
+            s.from = today.first_of_month().to_string();
+            s.to = today.to_string();
+        }
+    });
+    let (from, to) = match (Date::parse(&s.from), Date::parse(&s.to)) {
+        (Ok(f), Ok(t)) => (f, t),
+        _ => {
+            ui.label(RichText::new("Enter dates as YYYY-MM-DD.").color(theme::NEGATIVE));
+            return;
+        }
+    };
+    let report = s.kind.build(c, from, to);
+    if ui.button("Export CSV…").clicked() {
+        out.push(Action::ExportCsv { name: format!("{}.csv", s.kind.cli_id()), csv: report.to_csv() });
+    }
+    ui.separator();
+    widgets::report_view(ui, &report, out);
+}

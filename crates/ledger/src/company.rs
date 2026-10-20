@@ -1,0 +1,836 @@
+use std::collections::BTreeSet;
+
+use ledgercraft_core::{Date, Money};
+use serde::{Deserialize, Serialize};
+
+use crate::{
+    default_chart_of_accounts, Account, AccountId, AccountLine, AccountType, Address, Applied,
+    Contact, Customer, CustomerId, Item, ItemId, ItemSpec, LedgerError, LedgerResult, Party,
+    Posting, Transaction, TxnBody, TxnId, Vendor, VendorId,
+};
+
+/// Company-wide settings.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompanyInfo {
+    pub name: String,
+    #[serde(default)]
+    pub legal_name: String,
+    #[serde(default)]
+    pub address: Address,
+    #[serde(default)]
+    pub email: String,
+    #[serde(default)]
+    pub phone: String,
+    /// First month of the fiscal year, 1–12.
+    #[serde(default = "january")]
+    pub fiscal_year_start_month: u32,
+    #[serde(default = "usd")]
+    pub currency: String,
+}
+
+fn january() -> u32 {
+    1
+}
+
+fn usd() -> String {
+    "USD".to_string()
+}
+
+/// One posting with the transaction it came from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LedgerEntry {
+    pub txn: TxnId,
+    pub date: Date,
+    pub posting: Posting,
+}
+
+/// A company file: everything LedgerCraft knows about one set of books.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Company {
+    pub info: CompanyInfo,
+    #[serde(default)]
+    pub accounts: Vec<Account>,
+    #[serde(default)]
+    pub customers: Vec<Customer>,
+    #[serde(default)]
+    pub vendors: Vec<Vendor>,
+    #[serde(default)]
+    pub items: Vec<Item>,
+    #[serde(default)]
+    pub transactions: Vec<Transaction>,
+    #[serde(default)]
+    next_id: u64,
+}
+
+impl Company {
+    /// An empty company with no accounts.
+    pub fn new(name: &str) -> Self {
+        Self {
+            info: CompanyInfo {
+                name: name.to_string(),
+                legal_name: String::new(),
+                address: Address::default(),
+                email: String::new(),
+                phone: String::new(),
+                fiscal_year_start_month: 1,
+                currency: usd(),
+            },
+            accounts: Vec::new(),
+            customers: Vec::new(),
+            vendors: Vec::new(),
+            items: Vec::new(),
+            transactions: Vec::new(),
+            next_id: 0,
+        }
+    }
+
+    /// A new company with the default chart of accounts.
+    pub fn with_default_accounts(name: &str) -> Self {
+        let mut c = Self::new(name);
+        for row in default_chart_of_accounts() {
+            // The template has unique names and numbers, so this cannot fail;
+            // ignoring the result keeps construction infallible.
+            let _ = c.add_account(row.number, row.name, row.kind, row.description);
+        }
+        c
+    }
+
+    fn alloc(&mut self) -> u64 {
+        self.next_id = self.next_id.saturating_add(1);
+        self.next_id
+    }
+
+    /// After loading a file, make sure new ids never collide with existing ones.
+    pub fn repair_next_id(&mut self) {
+        let max = self
+            .accounts
+            .iter()
+            .map(|a| a.id.0)
+            .chain(self.customers.iter().map(|c| c.id.0))
+            .chain(self.vendors.iter().map(|v| v.id.0))
+            .chain(self.items.iter().map(|i| i.id.0))
+            .chain(self.transactions.iter().map(|t| t.id.0))
+            .max()
+            .unwrap_or(0);
+        self.next_id = self.next_id.max(max);
+    }
+
+    // ----- lookups ------------------------------------------------------
+
+    pub fn account(&self, id: AccountId) -> Option<&Account> {
+        self.accounts.iter().find(|a| a.id == id)
+    }
+
+    pub fn account_by_name(&self, name: &str) -> Option<&Account> {
+        let name = name.trim();
+        self.accounts
+            .iter()
+            .find(|a| a.name.eq_ignore_ascii_case(name) || (!a.number.is_empty() && a.number == name))
+    }
+
+    /// The first active account of a type, e.g. the default AR account.
+    pub fn first_account_of(&self, kind: AccountType) -> Option<AccountId> {
+        self.accounts.iter().find(|a| a.kind == kind && a.active).map(|a| a.id)
+    }
+
+    /// Accounts sorted the way the chart of accounts shows them.
+    pub fn sorted_accounts(&self) -> Vec<&Account> {
+        let mut v: Vec<&Account> = self.accounts.iter().collect();
+        v.sort_by(|a, b| (a.kind, &a.number, &a.name).cmp(&(b.kind, &b.number, &b.name)));
+        v
+    }
+
+    pub fn customer(&self, id: CustomerId) -> Option<&Customer> {
+        self.customers.iter().find(|c| c.id == id)
+    }
+
+    pub fn vendor(&self, id: VendorId) -> Option<&Vendor> {
+        self.vendors.iter().find(|v| v.id == id)
+    }
+
+    pub fn item(&self, id: ItemId) -> Option<&Item> {
+        self.items.iter().find(|i| i.id == id)
+    }
+
+    pub fn txn(&self, id: TxnId) -> Option<&Transaction> {
+        self.transactions.iter().find(|t| t.id == id)
+    }
+
+    pub fn party_name(&self, party: Party) -> String {
+        match party {
+            Party::Customer(id) => self
+                .customer(id)
+                .map(|c| c.contact.name.clone())
+                .unwrap_or_else(|| id.to_string()),
+            Party::Vendor(id) => self
+                .vendor(id)
+                .map(|v| v.contact.name.clone())
+                .unwrap_or_else(|| id.to_string()),
+        }
+    }
+
+    pub fn account_name(&self, id: AccountId) -> String {
+        self.account(id).map(Account::display_name).unwrap_or_else(|| id.to_string())
+    }
+
+    // ----- lists --------------------------------------------------------
+
+    pub fn add_account(
+        &mut self,
+        number: &str,
+        name: &str,
+        kind: AccountType,
+        description: &str,
+    ) -> LedgerResult<AccountId> {
+        self.check_account_names(None, number, name)?;
+        let id = AccountId(self.alloc());
+        self.accounts.push(Account {
+            id,
+            number: number.trim().to_string(),
+            name: name.trim().to_string(),
+            kind,
+            description: description.to_string(),
+            active: true,
+        });
+        Ok(id)
+    }
+
+    /// Renames or renumbers an account. Its type cannot change once created,
+    /// so posted history keeps its meaning.
+    pub fn update_account(
+        &mut self,
+        id: AccountId,
+        number: &str,
+        name: &str,
+        description: &str,
+    ) -> LedgerResult<()> {
+        self.check_account_names(Some(id), number, name)?;
+        let acct = self
+            .accounts
+            .iter_mut()
+            .find(|a| a.id == id)
+            .ok_or_else(|| LedgerError::NotFound(format!("Account {id}")))?;
+        acct.number = number.trim().to_string();
+        acct.name = name.trim().to_string();
+        acct.description = description.to_string();
+        Ok(())
+    }
+
+    fn check_account_names(&self, me: Option<AccountId>, number: &str, name: &str) -> LedgerResult<()> {
+        let (number, name) = (number.trim(), name.trim());
+        if name.is_empty() {
+            return Err(LedgerError::Required("An account name"));
+        }
+        for a in self.accounts.iter().filter(|a| Some(a.id) != me) {
+            if a.name.eq_ignore_ascii_case(name) {
+                return Err(LedgerError::Duplicate(format!("An account named {name:?}")));
+            }
+            if !number.is_empty() && a.number == number {
+                return Err(LedgerError::Duplicate(format!("Account number {number}")));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn set_account_active(&mut self, id: AccountId, active: bool) -> LedgerResult<()> {
+        if !active && !self.account_balance(id, None).is_zero() {
+            return Err(LedgerError::InUse(
+                "An account with a balance cannot be made inactive; move its balance first".into(),
+            ));
+        }
+        let acct = self
+            .accounts
+            .iter_mut()
+            .find(|a| a.id == id)
+            .ok_or_else(|| LedgerError::NotFound(format!("Account {id}")))?;
+        acct.active = active;
+        Ok(())
+    }
+
+    fn check_contact(contact: &Contact) -> LedgerResult<()> {
+        if contact.name.trim().is_empty() {
+            return Err(LedgerError::Required("A name"));
+        }
+        if contact.terms_days > 3650 {
+            return Err(LedgerError::Invalid("Payment terms must be 3650 days or fewer".into()));
+        }
+        Ok(())
+    }
+
+    pub fn add_customer(&mut self, contact: Contact) -> LedgerResult<CustomerId> {
+        Self::check_contact(&contact)?;
+        let name = contact.name.trim();
+        if self.customers.iter().any(|c| c.contact.name.eq_ignore_ascii_case(name)) {
+            return Err(LedgerError::Duplicate(format!("A customer named {name:?}")));
+        }
+        let id = CustomerId(self.alloc());
+        self.customers.push(Customer { id, contact, active: true });
+        Ok(id)
+    }
+
+    pub fn update_customer(&mut self, id: CustomerId, contact: Contact) -> LedgerResult<()> {
+        Self::check_contact(&contact)?;
+        let name = contact.name.trim().to_string();
+        if self.customers.iter().any(|c| c.id != id && c.contact.name.eq_ignore_ascii_case(&name)) {
+            return Err(LedgerError::Duplicate(format!("A customer named {name:?}")));
+        }
+        let c = self
+            .customers
+            .iter_mut()
+            .find(|c| c.id == id)
+            .ok_or_else(|| LedgerError::NotFound(format!("Customer {id}")))?;
+        c.contact = contact;
+        Ok(())
+    }
+
+    pub fn add_vendor(&mut self, contact: Contact) -> LedgerResult<VendorId> {
+        Self::check_contact(&contact)?;
+        let name = contact.name.trim();
+        if self.vendors.iter().any(|v| v.contact.name.eq_ignore_ascii_case(name)) {
+            return Err(LedgerError::Duplicate(format!("A vendor named {name:?}")));
+        }
+        let id = VendorId(self.alloc());
+        self.vendors.push(Vendor { id, contact, active: true });
+        Ok(id)
+    }
+
+    pub fn update_vendor(&mut self, id: VendorId, contact: Contact) -> LedgerResult<()> {
+        Self::check_contact(&contact)?;
+        let name = contact.name.trim().to_string();
+        if self.vendors.iter().any(|v| v.id != id && v.contact.name.eq_ignore_ascii_case(&name)) {
+            return Err(LedgerError::Duplicate(format!("A vendor named {name:?}")));
+        }
+        let v = self
+            .vendors
+            .iter_mut()
+            .find(|v| v.id == id)
+            .ok_or_else(|| LedgerError::NotFound(format!("Vendor {id}")))?;
+        v.contact = contact;
+        Ok(())
+    }
+
+    pub fn add_item(&mut self, spec: ItemSpec) -> LedgerResult<ItemId> {
+        let name = spec.name.trim();
+        if name.is_empty() {
+            return Err(LedgerError::Required("An item name"));
+        }
+        if self.items.iter().any(|i| i.spec.name.eq_ignore_ascii_case(name)) {
+            return Err(LedgerError::Duplicate(format!("An item named {name:?}")));
+        }
+        let acct = self.require_account(spec.income_account)?;
+        if acct.kind.needs_party() {
+            return Err(LedgerError::WrongAccountType {
+                account: acct.display_name(),
+                expected: "an income or other non-AR/AP account",
+            });
+        }
+        let id = ItemId(self.alloc());
+        self.items.push(Item { id, spec, active: true });
+        Ok(id)
+    }
+
+    // ----- transactions ---------------------------------------------------
+
+    fn require_account(&self, id: AccountId) -> LedgerResult<&Account> {
+        let a = self.account(id).ok_or_else(|| LedgerError::NotFound(format!("Account {id}")))?;
+        if !a.active {
+            return Err(LedgerError::Inactive(a.display_name()));
+        }
+        Ok(a)
+    }
+
+    fn require_kind(
+        &self,
+        id: AccountId,
+        ok: impl Fn(AccountType) -> bool,
+        expected: &'static str,
+    ) -> LedgerResult<&Account> {
+        let a = self.require_account(id)?;
+        if !ok(a.kind) {
+            return Err(LedgerError::WrongAccountType { account: a.display_name(), expected });
+        }
+        Ok(a)
+    }
+
+    fn require_customer(&self, id: CustomerId) -> LedgerResult<&Customer> {
+        let c = self.customer(id).ok_or_else(|| LedgerError::NotFound(format!("Customer {id}")))?;
+        if !c.active {
+            return Err(LedgerError::Inactive(c.contact.name.clone()));
+        }
+        Ok(c)
+    }
+
+    fn require_vendor(&self, id: VendorId) -> LedgerResult<&Vendor> {
+        let v = self.vendor(id).ok_or_else(|| LedgerError::NotFound(format!("Vendor {id}")))?;
+        if !v.active {
+            return Err(LedgerError::Inactive(v.contact.name.clone()));
+        }
+        Ok(v)
+    }
+
+    fn require_party(&self, party: Party) -> LedgerResult<()> {
+        match party {
+            Party::Customer(id) => self.require_customer(id).map(|_| ()),
+            Party::Vendor(id) => self.require_vendor(id).map(|_| ()),
+        }
+    }
+
+    fn check_expense_lines(&self, lines: &[AccountLine]) -> LedgerResult<Money> {
+        if lines.is_empty() {
+            return Err(LedgerError::Required("At least one line"));
+        }
+        for l in lines {
+            self.require_kind(l.account, |k| !k.needs_party(), "an account other than AR or AP")?;
+        }
+        let total = Money::checked_sum(lines.iter().map(|l| l.amount)).ok_or(LedgerError::Overflow)?;
+        if !total.is_positive() {
+            return Err(LedgerError::NotPositive("The total"));
+        }
+        Ok(total)
+    }
+
+    /// Checks a payment's applications against the open documents.
+    fn check_applications(
+        &self,
+        applied: &[Applied],
+        amount: Money,
+        is_target: impl Fn(&TxnBody) -> bool,
+        ignore: Option<TxnId>,
+    ) -> LedgerResult<()> {
+        let mut seen = BTreeSet::new();
+        let mut sum = Money::ZERO;
+        for a in applied {
+            if !a.amount.is_positive() {
+                return Err(LedgerError::NotPositive("Each applied amount"));
+            }
+            if !seen.insert(a.txn) {
+                return Err(LedgerError::Invalid(format!("{} is applied twice", a.txn)));
+            }
+            let doc = self
+                .txn(a.txn)
+                .filter(|t| !t.voided && is_target(&t.body))
+                .ok_or_else(|| LedgerError::NotFound(format!("Open document {}", a.txn)))?;
+            let open = self.open_balance_excluding(doc.id, None, ignore);
+            if a.amount > open {
+                return Err(LedgerError::OverApplied { txn: doc.id, open, applied: a.amount });
+            }
+            sum = sum.checked_add(a.amount).ok_or(LedgerError::Overflow)?;
+        }
+        if sum > amount {
+            return Err(LedgerError::Invalid(format!(
+                "applied amounts ({sum}) exceed the payment ({amount})"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Validates a transaction against the books without changing anything.
+    pub fn validate(&self, body: &TxnBody) -> LedgerResult<()> {
+        match body {
+            TxnBody::Journal(j) => {
+                if j.lines.len() < 2 {
+                    return Err(LedgerError::Required("At least two lines"));
+                }
+                let mut debits = Money::ZERO;
+                let mut credits = Money::ZERO;
+                for l in &j.lines {
+                    let acct = self.require_account(l.account)?;
+                    if l.debit.is_negative() || l.credit.is_negative() {
+                        return Err(LedgerError::Invalid("Debits and credits cannot be negative".into()));
+                    }
+                    if l.debit.is_zero() == l.credit.is_zero() {
+                        return Err(LedgerError::Invalid(
+                            "Each line needs either a debit or a credit".into(),
+                        ));
+                    }
+                    if let Some(p) = l.party {
+                        self.require_party(p)?;
+                    }
+                    match (acct.kind, l.party) {
+                        (AccountType::AccountsReceivable, Some(Party::Customer(_)))
+                        | (AccountType::AccountsPayable, Some(Party::Vendor(_))) => {}
+                        (AccountType::AccountsReceivable, _) => {
+                            return Err(LedgerError::Required("A customer on each AR line"))
+                        }
+                        (AccountType::AccountsPayable, _) => {
+                            return Err(LedgerError::Required("A vendor on each AP line"))
+                        }
+                        _ => {}
+                    }
+                    debits = debits.checked_add(l.debit).ok_or(LedgerError::Overflow)?;
+                    credits = credits.checked_add(l.credit).ok_or(LedgerError::Overflow)?;
+                }
+                if debits != credits {
+                    return Err(LedgerError::Unbalanced { debits, credits });
+                }
+            }
+            TxnBody::Invoice(inv) => {
+                self.require_customer(inv.customer)?;
+                self.require_kind(inv.ar_account, |k| k == AccountType::AccountsReceivable, "an Accounts Receivable account")?;
+                if inv.lines.is_empty() {
+                    return Err(LedgerError::Required("At least one line"));
+                }
+                for l in &inv.lines {
+                    self.require_kind(l.account, |k| !k.needs_party(), "an account other than AR or AP")?;
+                    if let Some(item) = l.item {
+                        self.item(item).ok_or_else(|| LedgerError::NotFound(format!("Item {item}")))?;
+                    }
+                }
+                let total = inv.total().ok_or(LedgerError::Overflow)?;
+                if !total.is_positive() {
+                    return Err(LedgerError::NotPositive("The invoice total"));
+                }
+            }
+            TxnBody::ReceivePayment(p) => {
+                self.require_customer(p.customer)?;
+                self.require_kind(p.deposit_to, |k| matches!(k, AccountType::Bank | AccountType::OtherCurrentAsset), "a bank or Undeposited Funds account")?;
+                self.require_kind(p.ar_account, |k| k == AccountType::AccountsReceivable, "an Accounts Receivable account")?;
+                if !p.amount.is_positive() {
+                    return Err(LedgerError::NotPositive("The payment amount"));
+                }
+                let customer = p.customer;
+                self.check_applications(
+                    &p.applied,
+                    p.amount,
+                    |b| matches!(b, TxnBody::Invoice(i) if i.customer == customer),
+                    None,
+                )?;
+            }
+            TxnBody::Bill(b) => {
+                self.require_vendor(b.vendor)?;
+                self.require_kind(b.ap_account, |k| k == AccountType::AccountsPayable, "an Accounts Payable account")?;
+                self.check_expense_lines(&b.lines)?;
+            }
+            TxnBody::PayBill(p) => {
+                self.require_vendor(p.vendor)?;
+                self.require_kind(p.pay_from, |k| matches!(k, AccountType::Bank | AccountType::CreditCard), "a bank or credit card account")?;
+                self.require_kind(p.ap_account, |k| k == AccountType::AccountsPayable, "an Accounts Payable account")?;
+                if !p.amount.is_positive() {
+                    return Err(LedgerError::NotPositive("The payment amount"));
+                }
+                let vendor = p.vendor;
+                self.check_applications(
+                    &p.applied,
+                    p.amount,
+                    |b| matches!(b, TxnBody::Bill(bill) if bill.vendor == vendor),
+                    None,
+                )?;
+            }
+            TxnBody::Check(c) => {
+                if let Some(p) = c.payee {
+                    self.require_party(p)?;
+                }
+                self.require_kind(c.pay_from, |k| matches!(k, AccountType::Bank | AccountType::CreditCard), "a bank or credit card account")?;
+                self.check_expense_lines(&c.lines)?;
+            }
+            TxnBody::Deposit(d) => {
+                self.require_kind(d.deposit_to, |k| k == AccountType::Bank, "a bank account")?;
+                self.check_expense_lines(&d.lines)?;
+            }
+        }
+        // Belt and braces: whatever the form, the postings must balance.
+        let postings = body.postings()?;
+        let sum = Money::checked_sum(postings.iter().map(|p| p.amount)).ok_or(LedgerError::Overflow)?;
+        if !sum.is_zero() {
+            return Err(LedgerError::Invalid(format!("internal: postings are off by {sum}")));
+        }
+        Ok(())
+    }
+
+    /// Validates and records a transaction.
+    pub fn post(&mut self, date: Date, number: &str, memo: &str, body: TxnBody) -> LedgerResult<TxnId> {
+        self.validate(&body)?;
+        let id = TxnId(self.alloc());
+        self.transactions.push(Transaction {
+            id,
+            date,
+            number: number.trim().to_string(),
+            memo: memo.to_string(),
+            body,
+            voided: false,
+        });
+        Ok(id)
+    }
+
+    /// Voids a transaction: it stays on file but no longer posts.
+    pub fn void(&mut self, id: TxnId) -> LedgerResult<()> {
+        let in_use = self
+            .transactions
+            .iter()
+            .any(|t| !t.voided && t.body.applications().iter().any(|a| a.txn == id));
+        if in_use {
+            return Err(LedgerError::InUse(format!(
+                "{id} has payments applied to it; void those payments first"
+            )));
+        }
+        let t = self
+            .transactions
+            .iter_mut()
+            .find(|t| t.id == id)
+            .ok_or_else(|| LedgerError::NotFound(format!("Transaction {id}")))?;
+        if t.voided {
+            return Err(LedgerError::Invalid(format!("{id} is already void")));
+        }
+        t.voided = true;
+        Ok(())
+    }
+
+    // ----- balances -------------------------------------------------------
+
+    /// Every posting from every live transaction, in date order.
+    pub fn ledger_entries(&self) -> Vec<LedgerEntry> {
+        let mut txns: Vec<&Transaction> = self.transactions.iter().filter(|t| !t.voided).collect();
+        txns.sort_by_key(|t| (t.date, t.id));
+        let mut out = Vec::new();
+        for t in txns {
+            if let Ok(postings) = t.body.postings() {
+                for posting in postings {
+                    out.push(LedgerEntry { txn: t.id, date: t.date, posting });
+                }
+            }
+        }
+        out
+    }
+
+    /// An account's balance as a person reads it: positive means the account
+    /// holds its normal kind of balance (an asset you have, a debt you owe).
+    pub fn account_balance(&self, id: AccountId, as_of: Option<Date>) -> Money {
+        let Some(acct) = self.account(id) else { return Money::ZERO };
+        let raw = self
+            .ledger_entries()
+            .into_iter()
+            .filter(|e| e.posting.account == id && as_of.is_none_or(|d| e.date <= d))
+            .fold(Money::ZERO, |acc, e| acc.saturating_add(e.posting.amount));
+        if acct.kind.is_debit_normal() {
+            raw
+        } else {
+            raw.saturating_neg()
+        }
+    }
+
+    /// What is still owed on an invoice or bill.
+    pub fn open_balance(&self, doc: TxnId, as_of: Option<Date>) -> Money {
+        self.open_balance_excluding(doc, as_of, None)
+    }
+
+    fn open_balance_excluding(&self, doc: TxnId, as_of: Option<Date>, ignore: Option<TxnId>) -> Money {
+        let Some(t) = self.txn(doc) else { return Money::ZERO };
+        if t.voided {
+            return Money::ZERO;
+        }
+        let total = match &t.body {
+            TxnBody::Invoice(i) => i.total(),
+            TxnBody::Bill(b) => b.total(),
+            _ => None,
+        }
+        .unwrap_or(Money::ZERO);
+        let paid = self
+            .transactions
+            .iter()
+            .filter(|p| !p.voided && Some(p.id) != ignore && as_of.is_none_or(|d| p.date <= d))
+            .flat_map(|p| p.body.applications().iter())
+            .filter(|a| a.txn == doc)
+            .fold(Money::ZERO, |acc, a| acc.saturating_add(a.amount));
+        total.saturating_sub(paid)
+    }
+
+    /// Open invoices for a customer, oldest first: (invoice, open amount).
+    pub fn open_invoices(&self, customer: CustomerId) -> Vec<(&Transaction, Money)> {
+        self.open_docs(|b| matches!(b, TxnBody::Invoice(i) if i.customer == customer))
+    }
+
+    /// Open bills for a vendor, oldest first: (bill, open amount).
+    pub fn open_bills(&self, vendor: VendorId) -> Vec<(&Transaction, Money)> {
+        self.open_docs(|b| matches!(b, TxnBody::Bill(bill) if bill.vendor == vendor))
+    }
+
+    fn open_docs(&self, pick: impl Fn(&TxnBody) -> bool) -> Vec<(&Transaction, Money)> {
+        let mut v: Vec<(&Transaction, Money)> = self
+            .transactions
+            .iter()
+            .filter(|t| !t.voided && pick(&t.body))
+            .map(|t| (t, self.open_balance(t.id, None)))
+            .filter(|(_, open)| open.is_positive())
+            .collect();
+        v.sort_by_key(|(t, _)| (t.date, t.id));
+        v
+    }
+
+    /// What a customer owes in total (open invoices less unapplied payments).
+    pub fn customer_balance(&self, id: CustomerId) -> Money {
+        self.party_balance(Party::Customer(id), AccountType::AccountsReceivable)
+    }
+
+    /// What you owe a vendor in total.
+    pub fn vendor_balance(&self, id: VendorId) -> Money {
+        self.party_balance(Party::Vendor(id), AccountType::AccountsPayable).saturating_neg()
+    }
+
+    fn party_balance(&self, party: Party, kind: AccountType) -> Money {
+        self.ledger_entries()
+            .into_iter()
+            .filter(|e| {
+                e.posting.party == Some(party)
+                    && self.account(e.posting.account).is_some_and(|a| a.kind == kind)
+            })
+            .fold(Money::ZERO, |acc, e| acc.saturating_add(e.posting.amount))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Bill, Invoice, JournalEntry, JournalLine, PayBill, ReceivePayment, SalesLine};
+    use ledgercraft_core::Qty;
+
+    fn d(s: &str) -> Date {
+        Date::parse(s).unwrap()
+    }
+
+    fn acct(c: &Company, name: &str) -> AccountId {
+        c.account_by_name(name).unwrap().id
+    }
+
+    fn setup() -> (Company, CustomerId, VendorId) {
+        let mut c = Company::with_default_accounts("Test Co");
+        let cust = c.add_customer(Contact { name: "Acme".into(), terms_days: 30, ..Contact::default() }).unwrap();
+        let vend = c.add_vendor(Contact { name: "Paper Mill".into(), ..Contact::default() }).unwrap();
+        (c, cust, vend)
+    }
+
+    fn invoice(c: &Company, cust: CustomerId, cents: i64) -> TxnBody {
+        TxnBody::Invoice(Invoice {
+            customer: cust,
+            due_date: d("2026-02-01"),
+            ar_account: acct(c, "Accounts Receivable"),
+            lines: vec![SalesLine {
+                item: None,
+                description: "Work".into(),
+                qty: Qty::from_whole(2),
+                rate: Money::from_cents(cents),
+                account: acct(c, "Service Income"),
+            }],
+        })
+    }
+
+    #[test]
+    fn invoice_and_payment_flow() {
+        let (mut c, cust, _) = setup();
+        let inv = c.post(d("2026-01-02"), "1001", "", invoice(&c, cust, 50_000)).unwrap();
+        assert_eq!(c.account_balance(acct(&c, "Accounts Receivable"), None), Money::from_cents(100_000));
+        assert_eq!(c.account_balance(acct(&c, "Service Income"), None), Money::from_cents(100_000));
+        assert_eq!(c.open_balance(inv, None), Money::from_cents(100_000));
+
+        let pay = TxnBody::ReceivePayment(ReceivePayment {
+            customer: cust,
+            deposit_to: acct(&c, "Checking"),
+            ar_account: acct(&c, "Accounts Receivable"),
+            amount: Money::from_cents(40_000),
+            method: "Check".into(),
+            applied: vec![Applied { txn: inv, amount: Money::from_cents(40_000) }],
+        });
+        let pay_id = c.post(d("2026-01-10"), "", "", pay).unwrap();
+        assert_eq!(c.open_balance(inv, None), Money::from_cents(60_000));
+        assert_eq!(c.customer_balance(cust), Money::from_cents(60_000));
+        assert_eq!(c.account_balance(acct(&c, "Checking"), None), Money::from_cents(40_000));
+
+        assert!(matches!(c.void(inv), Err(LedgerError::InUse(_))));
+        c.void(pay_id).unwrap();
+        assert_eq!(c.open_balance(inv, None), Money::from_cents(100_000));
+        c.void(inv).unwrap();
+        assert_eq!(c.customer_balance(cust), Money::ZERO);
+    }
+
+    #[test]
+    fn overpaying_an_invoice_is_refused() {
+        let (mut c, cust, _) = setup();
+        let inv = c.post(d("2026-01-02"), "", "", invoice(&c, cust, 100)).unwrap();
+        let pay = TxnBody::ReceivePayment(ReceivePayment {
+            customer: cust,
+            deposit_to: acct(&c, "Checking"),
+            ar_account: acct(&c, "Accounts Receivable"),
+            amount: Money::from_cents(500),
+            method: String::new(),
+            applied: vec![Applied { txn: inv, amount: Money::from_cents(500) }],
+        });
+        assert!(matches!(c.post(d("2026-01-03"), "", "", pay), Err(LedgerError::OverApplied { .. })));
+    }
+
+    #[test]
+    fn bills_and_bill_payments() {
+        let (mut c, _, vend) = setup();
+        let bill = c
+            .post(
+                d("2026-01-05"),
+                "B-7",
+                "",
+                TxnBody::Bill(Bill {
+                    vendor: vend,
+                    due_date: d("2026-02-04"),
+                    ap_account: acct(&c, "Accounts Payable"),
+                    lines: vec![AccountLine { account: acct(&c, "Office Supplies"), description: "Paper".into(), amount: Money::from_cents(12_345) }],
+                }),
+            )
+            .unwrap();
+        assert_eq!(c.vendor_balance(vend), Money::from_cents(12_345));
+        c.post(
+            d("2026-01-20"),
+            "2001",
+            "",
+            TxnBody::PayBill(PayBill {
+                vendor: vend,
+                pay_from: acct(&c, "Checking"),
+                ap_account: acct(&c, "Accounts Payable"),
+                amount: Money::from_cents(12_345),
+                applied: vec![Applied { txn: bill, amount: Money::from_cents(12_345) }],
+            }),
+        )
+        .unwrap();
+        assert_eq!(c.vendor_balance(vend), Money::ZERO);
+        assert_eq!(c.account_balance(acct(&c, "Checking"), None), Money::from_cents(-12_345));
+        assert!(c.open_bills(vend).is_empty());
+    }
+
+    #[test]
+    fn journal_must_balance_and_name_ar_lines() {
+        let (mut c, cust, _) = setup();
+        let line = |a, dr: i64, cr: i64, party| JournalLine {
+            account: a,
+            debit: Money::from_cents(dr),
+            credit: Money::from_cents(cr),
+            memo: String::new(),
+            party,
+        };
+        let checking = acct(&c, "Checking");
+        let equity = acct(&c, "Owner's Equity");
+        let ar = acct(&c, "Accounts Receivable");
+        let bad = TxnBody::Journal(JournalEntry { lines: vec![line(checking, 100, 0, None), line(equity, 0, 99, None)] });
+        assert!(matches!(c.post(d("2026-01-01"), "", "", bad), Err(LedgerError::Unbalanced { .. })));
+        let no_name = TxnBody::Journal(JournalEntry { lines: vec![line(ar, 100, 0, None), line(equity, 0, 100, None)] });
+        assert!(c.post(d("2026-01-01"), "", "", no_name).is_err());
+        let ok = TxnBody::Journal(JournalEntry {
+            lines: vec![line(ar, 100, 0, Some(Party::Customer(cust))), line(equity, 0, 100, None)],
+        });
+        assert!(c.post(d("2026-01-01"), "", "", ok).is_ok());
+    }
+
+    #[test]
+    fn accounts_are_unique_and_balances_block_deactivation() {
+        let (mut c, cust, _) = setup();
+        assert!(c.add_account("1000", "Another", AccountType::Bank, "").is_err());
+        assert!(c.add_account("", "checking", AccountType::Bank, "").is_err());
+        c.post(d("2026-01-02"), "", "", invoice(&c, cust, 100)).unwrap();
+        assert!(c.set_account_active(acct(&c, "Service Income"), false).is_err());
+        assert!(c.set_account_active(acct(&c, "Rent"), false).is_ok());
+    }
+
+    #[test]
+    fn json_round_trip() {
+        let (mut c, cust, _) = setup();
+        c.post(d("2026-01-02"), "1", "", invoice(&c, cust, 100)).unwrap();
+        let json = serde_json::to_string(&c).unwrap();
+        let mut back: Company = serde_json::from_str(&json).unwrap();
+        back.repair_next_id();
+        assert_eq!(back, c);
+    }
+}
