@@ -8,7 +8,11 @@ double-entry ledger; the Profit & Loss, Balance Sheet, Trial Balance and aging
 reports read straight from it. Your books live in one open, documented file you
 own. No subscription, no licence server, no telemetry.
 
-> **Status: pre-alpha (0.1).** Use it to learn, test and contribute. Keep your
+> **Status: pre-alpha (0.1), Windows first.** Builds and releases currently
+> target Windows 10/11 (x64). The code stays portable, but macOS and Linux are
+> not tested or shipped until the Windows build is solid.
+>
+> **Pre-alpha:** Use it to learn, test and contribute. Keep your
 > real books in your existing software until LedgerCraft reaches beta.
 
 ## Why LedgerCraft
@@ -31,8 +35,9 @@ own. No subscription, no licence server, no telemetry.
 
 ## Quick start
 
-You need [Rust](https://rustup.rs) 1.82 or newer. On Linux also install the
-GUI build dependencies (Debian/Ubuntu: `sudo apt install libxkbcommon-dev libgtk-3-dev`).
+On Windows you need [Rust](https://rustup.rs) 1.82 or newer and the Microsoft
+C++ Build Tools ("Desktop development with C++"). If the window is blank or
+slow, try `$env:WGPU_BACKEND="vulkan"` before running.
 
 ```sh
 git clone https://github.com/OWNER/ledgercraft

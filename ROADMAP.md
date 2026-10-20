@@ -18,6 +18,16 @@ day to day; weighted by depth, LedgerCraft 0.1 covers roughly 20% of it.
 * M1 Engine: commands, undo/redo, atomic `.lcbooks` files, sample company
 * M1 Apps: desktop app (egui), CLI
 
+## Now (M1.5 — solid on Windows)
+
+Platform focus: **Windows 10/11 x64 only** until this list is done.
+
+1. M1.5.1 Debug and release builds start cleanly on Windows (wgpu/DX12 renderer) — in progress
+2. M1.5.2 Walk every page and form with the sample company; fix crashes and layout problems
+3. M1.5.3 `cargo xtask ci` green on the Windows GitHub runner
+4. M1.5.4 Windows niceties: app icon, file association for `.lcbooks`, remembered window size, high-DPI check
+5. M1.5.5 Windows installer (MSI) and portable zip; code signing later
+
 ## Next (M2 — usable for a real sole proprietor)
 
 1. M2.1 Edit a posted transaction (today: void and re-enter); open a transaction from any list or report
