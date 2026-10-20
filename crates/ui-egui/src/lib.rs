@@ -6,6 +6,7 @@
 
 mod app;
 mod forms;
+mod hints;
 mod licenses;
 mod pages;
 mod theme;

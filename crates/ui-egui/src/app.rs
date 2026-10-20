@@ -171,7 +171,8 @@ impl LedgerApp {
         else {
             return;
         };
-        match std::fs::write(&path, csv) {
+               match std::fs::write(&path, format!("\u{feff}{csv}")) {
+
             Ok(()) => self.info(format!("Exported {}", path.display())),
             Err(e) => self.error(format!("Could not write {}: {e}", path.display())),
         }
@@ -424,8 +425,9 @@ impl LedgerApp {
                 for (label, page) in items {
                     let selected = self.page == page;
                     let text = RichText::new(label).size(15.0).color(theme::NAV_TEXT);
-                    if ui.selectable_label(selected, text).clicked() {
+                                        if ui.selectable_label(selected, text).on_hover_text(page.hint()).clicked() {
                         self.page = page;
+
                     }
                 }
                 ui.add_space(16.0);
@@ -433,8 +435,9 @@ impl LedgerApp {
                 for kind in [FormKind::Invoice, FormKind::ReceivePayment, FormKind::Bill, FormKind::PayBills, FormKind::Check, FormKind::Deposit] {
                     let selected = self.page == Page::Form(kind);
                     let text = RichText::new(kind.title()).color(theme::NAV_TEXT);
-                    if ui.selectable_label(selected, text).clicked() {
+                                        if ui.selectable_label(selected, text).on_hover_text(kind.hint()).clicked() {
                         self.page = Page::Form(kind);
+
                     }
                 }
             });

@@ -217,19 +217,19 @@ fn total_row(ui: &mut Ui, label: &str, total: Money) {
 pub(crate) fn invoice(ui: &mut Ui, c: &Company, f: &mut InvoiceForm, out: &mut Vec<Action>) {
     header(ui, FormKind::Invoice);
     egui::Grid::new("inv_head").num_columns(4).spacing([12.0, 6.0]).show(ui, |ui| {
-        ui.label("Customer");
+        widgets::hint_label(ui, "Customer");
         if widgets::customer_combo(ui, "inv_customer", c, &mut f.customer) {
             set_due_from_terms(c, f);
         }
-        ui.label("Invoice #");
+        widgets::hint_label(ui, "Invoice #");
         let hint = widgets::next_number(c, 1001, |b| matches!(b, TxnBody::Invoice(_)));
         field(ui, &mut f.number, 100.0, &hint);
         ui.end_row();
-        ui.label("Date");
+        widgets::hint_label(ui, "Date");
         if field(ui, &mut f.date, 110.0, "YYYY-MM-DD").changed() {
             set_due_from_terms(c, f);
         }
-        ui.label("Due date");
+        widgets::hint_label(ui, "Due date");
         field(ui, &mut f.due, 110.0, "from terms");
         ui.end_row();
     });
@@ -245,7 +245,7 @@ pub(crate) fn invoice(ui: &mut Ui, c: &Company, f: &mut InvoiceForm, out: &mut V
     let mut total = Money::ZERO;
     egui::Grid::new("inv_lines").striped(true).spacing([8.0, 4.0]).show(ui, |ui| {
         for h in ["Item", "Description", "Qty", "Rate", "Income account", "Amount", ""] {
-            ui.label(RichText::new(h).strong());
+            widgets::column_header(ui, h);
         }
         ui.end_row();
         for (i, line) in f.lines.iter_mut().enumerate() {
@@ -271,7 +271,7 @@ pub(crate) fn invoice(ui: &mut Ui, c: &Company, f: &mut InvoiceForm, out: &mut V
                     money_label(ui, amount, false);
                 }
                 _ => {
-                    ui.label("");
+                    widgets::hint_label(ui, "");
                 }
             }
             if widgets::remove_button(ui) {
@@ -290,7 +290,7 @@ pub(crate) fn invoice(ui: &mut Ui, c: &Company, f: &mut InvoiceForm, out: &mut V
     }
     ui.add_space(6.0);
     ui.horizontal(|ui| {
-        ui.label("Memo");
+        widgets::hint_label(ui, "Memo");
         field(ui, &mut f.memo, 360.0, "");
     });
     total_row(ui, "Total", total);
@@ -355,18 +355,18 @@ pub(crate) fn receive_payment(ui: &mut Ui, c: &Company, f: &mut PaymentForm, out
             .or_else(|| c.first_account_of(AccountType::Bank));
     }
     egui::Grid::new("rp_head").num_columns(4).spacing([12.0, 6.0]).show(ui, |ui| {
-        ui.label("Received from");
+        widgets::hint_label(ui, "Received from");
         if widgets::customer_combo(ui, "rp_customer", c, &mut f.customer) {
             f.amounts.clear();
         }
-        ui.label("Date");
+        widgets::hint_label(ui, "Date");
         field(ui, &mut f.date, 110.0, "YYYY-MM-DD");
         ui.end_row();
-        ui.label("Deposit to");
+        widgets::hint_label(ui, "Deposit to");
         widgets::account_combo(ui, "rp_deposit", c, &mut f.account, |k| {
             matches!(k, AccountType::Bank | AccountType::OtherCurrentAsset)
         });
-        ui.label("Method / ref");
+        widgets::hint_label(ui, "Method / ref");
         field(ui, &mut f.method, 140.0, "Check #, ACH, card…");
         ui.end_row();
     });
@@ -386,7 +386,7 @@ pub(crate) fn receive_payment(ui: &mut Ui, c: &Company, f: &mut PaymentForm, out
     };
     let total = open_docs_grid(ui, "rp_docs", &docs, &mut f.amounts);
     ui.horizontal(|ui| {
-        ui.label("Memo");
+        widgets::hint_label(ui, "Memo");
         field(ui, &mut f.memo, 360.0, "");
     });
     total_row(ui, "Amount received", total);
@@ -405,18 +405,18 @@ pub(crate) fn pay_bills(ui: &mut Ui, c: &Company, f: &mut PaymentForm, out: &mut
         f.account = c.first_account_of(AccountType::Bank);
     }
     egui::Grid::new("pb_head").num_columns(4).spacing([12.0, 6.0]).show(ui, |ui| {
-        ui.label("Pay to");
+        widgets::hint_label(ui, "Pay to");
         if widgets::vendor_combo(ui, "pb_vendor", c, &mut f.vendor) {
             f.amounts.clear();
         }
-        ui.label("Date");
+        widgets::hint_label(ui, "Date");
         field(ui, &mut f.date, 110.0, "YYYY-MM-DD");
         ui.end_row();
-        ui.label("Pay from");
+        widgets::hint_label(ui, "Pay from");
         widgets::account_combo(ui, "pb_from", c, &mut f.account, |k| {
             matches!(k, AccountType::Bank | AccountType::CreditCard)
         });
-        ui.label("Check #");
+        widgets::hint_label(ui, "Check #");
         let hint = widgets::next_number(c, 1001, |b| matches!(b, TxnBody::Check(_) | TxnBody::PayBill(_)));
         field(ui, &mut f.number, 100.0, &hint);
         ui.end_row();
@@ -437,7 +437,7 @@ pub(crate) fn pay_bills(ui: &mut Ui, c: &Company, f: &mut PaymentForm, out: &mut
     };
     let total = open_docs_grid(ui, "pb_docs", &docs, &mut f.amounts);
     ui.horizontal(|ui| {
-        ui.label("Memo");
+        widgets::hint_label(ui, "Memo");
         field(ui, &mut f.memo, 360.0, "");
     });
     total_row(ui, "Payment total", total);
@@ -473,7 +473,8 @@ fn open_docs_grid(
         ui.add_space(8.0);
         return Money::ZERO;
     }
-    if ui.button("Pay all open").clicked() {
+        if ui.button("Pay all open").on_hover_text("Fill in the full open amount of every item listed.").clicked() {
+
         for doc in docs {
             amounts.insert(doc.id, doc.open.to_plain_string());
         }
@@ -481,7 +482,7 @@ fn open_docs_grid(
     let mut total = Money::ZERO;
     egui::Grid::new(salt).striped(true).spacing([14.0, 4.0]).show(ui, |ui| {
         for h in ["Date", "Number", "Due", "Original", "Open", "Payment"] {
-            ui.label(RichText::new(h).strong());
+            widgets::column_header(ui, h);
         }
         ui.end_row();
         for doc in docs {
@@ -569,7 +570,7 @@ fn account_lines(ui: &mut Ui, salt: &str, c: &Company, lines: &mut Vec<AccountLi
     let mut total = Money::ZERO;
     egui::Grid::new(salt).striped(true).spacing([8.0, 4.0]).show(ui, |ui| {
         for h in ["Account", "Description", "Amount", ""] {
-            ui.label(RichText::new(h).strong());
+            widgets::column_header(ui, h);
         }
         ui.end_row();
         for (i, line) in lines.iter_mut().enumerate() {
@@ -613,14 +614,14 @@ fn build_lines(lines: &[AccountLineInput]) -> Result<Vec<AccountLine>, String> {
 pub(crate) fn bill(ui: &mut Ui, c: &Company, f: &mut LinesForm, out: &mut Vec<Action>) {
     header(ui, FormKind::Bill);
     egui::Grid::new("bill_head").num_columns(4).spacing([12.0, 6.0]).show(ui, |ui| {
-        ui.label("Vendor");
+        widgets::hint_label(ui, "Vendor");
         let changed = widgets::vendor_combo(ui, "bill_vendor", c, &mut f.vendor);
-        ui.label("Ref no.");
+        widgets::hint_label(ui, "Ref no.");
         field(ui, &mut f.number, 120.0, "vendor's invoice #");
         ui.end_row();
-        ui.label("Date");
+        widgets::hint_label(ui, "Date");
         let date_changed = field(ui, &mut f.date, 110.0, "YYYY-MM-DD").changed();
-        ui.label("Due date");
+        widgets::hint_label(ui, "Due date");
         field(ui, &mut f.due, 110.0, "from terms");
         ui.end_row();
         if changed || date_changed {
@@ -633,7 +634,7 @@ pub(crate) fn bill(ui: &mut Ui, c: &Company, f: &mut LinesForm, out: &mut Vec<Ac
     ui.add_space(8.0);
     let total = account_lines(ui, "bill_lines", c, &mut f.lines);
     ui.horizontal(|ui| {
-        ui.label("Memo");
+        widgets::hint_label(ui, "Memo");
         field(ui, &mut f.memo, 360.0, "");
     });
     total_row(ui, "Amount due", total);
@@ -667,24 +668,24 @@ pub(crate) fn check(ui: &mut Ui, c: &Company, f: &mut LinesForm, out: &mut Vec<A
         f.account = c.first_account_of(AccountType::Bank);
     }
     egui::Grid::new("chk_head").num_columns(4).spacing([12.0, 6.0]).show(ui, |ui| {
-        ui.label("Pay from");
+        widgets::hint_label(ui, "Pay from");
         widgets::account_combo(ui, "chk_from", c, &mut f.account, |k| {
             matches!(k, AccountType::Bank | AccountType::CreditCard)
         });
-        ui.label("Check #");
+        widgets::hint_label(ui, "Check #");
         let hint = widgets::next_number(c, 1001, |b| matches!(b, TxnBody::Check(_) | TxnBody::PayBill(_)));
         field(ui, &mut f.number, 100.0, &hint);
         ui.end_row();
-        ui.label("Payee");
+        widgets::hint_label(ui, "Payee");
         widgets::party_combo(ui, "chk_payee", c, &mut f.payee);
-        ui.label("Date");
+        widgets::hint_label(ui, "Date");
         field(ui, &mut f.date, 110.0, "YYYY-MM-DD");
         ui.end_row();
     });
     ui.add_space(8.0);
     let total = account_lines(ui, "chk_lines", c, &mut f.lines);
     ui.horizontal(|ui| {
-        ui.label("Memo");
+        widgets::hint_label(ui, "Memo");
         field(ui, &mut f.memo, 360.0, "");
     });
     total_row(ui, "Amount", total);
@@ -719,9 +720,9 @@ pub(crate) fn deposit(ui: &mut Ui, c: &Company, f: &mut LinesForm, out: &mut Vec
         f.account = c.first_account_of(AccountType::Bank);
     }
     egui::Grid::new("dep_head").num_columns(4).spacing([12.0, 6.0]).show(ui, |ui| {
-        ui.label("Deposit to");
+        widgets::hint_label(ui, "Deposit to");
         widgets::account_combo(ui, "dep_to", c, &mut f.account, |k| k == AccountType::Bank);
-        ui.label("Date");
+        widgets::hint_label(ui, "Date");
         field(ui, &mut f.date, 110.0, "YYYY-MM-DD");
         ui.end_row();
     });
@@ -745,7 +746,7 @@ pub(crate) fn deposit(ui: &mut Ui, c: &Company, f: &mut LinesForm, out: &mut Vec
     ui.add_space(8.0);
     let total = account_lines(ui, "dep_lines", c, &mut f.lines);
     ui.horizontal(|ui| {
-        ui.label("Memo");
+        widgets::hint_label(ui, "Memo");
         field(ui, &mut f.memo, 360.0, "");
     });
     total_row(ui, "Deposit total", total);
@@ -773,9 +774,9 @@ fn build_deposit(f: &LinesForm) -> Result<Command, String> {
 pub(crate) fn journal(ui: &mut Ui, c: &Company, f: &mut JournalForm, out: &mut Vec<Action>) {
     header(ui, FormKind::Journal);
     ui.horizontal(|ui| {
-        ui.label("Date");
+        widgets::hint_label(ui, "Date");
         field(ui, &mut f.date, 110.0, "YYYY-MM-DD");
-        ui.label("Entry #");
+        widgets::hint_label(ui, "Entry #");
         field(ui, &mut f.number, 80.0, "");
     });
     ui.add_space(8.0);
@@ -784,7 +785,7 @@ pub(crate) fn journal(ui: &mut Ui, c: &Company, f: &mut JournalForm, out: &mut V
     let mut credits = Money::ZERO;
     egui::Grid::new("je_lines").striped(true).spacing([8.0, 4.0]).show(ui, |ui| {
         for h in ["Account", "Debit", "Credit", "Memo", "Name", ""] {
-            ui.label(RichText::new(h).strong());
+            widgets::column_header(ui, h);
         }
         ui.end_row();
         for (i, line) in f.lines.iter_mut().enumerate() {
@@ -810,7 +811,7 @@ pub(crate) fn journal(ui: &mut Ui, c: &Company, f: &mut JournalForm, out: &mut V
         f.lines.push(JournalLineInput::default());
     }
     ui.horizontal(|ui| {
-        ui.label("Memo");
+        widgets::hint_label(ui, "Memo");
         field(ui, &mut f.memo, 360.0, "");
     });
     ui.horizontal(|ui| {

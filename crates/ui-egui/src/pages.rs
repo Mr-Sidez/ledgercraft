@@ -121,7 +121,8 @@ fn title(ui: &mut Ui, text: &str) {
 
 fn flow_button(ui: &mut Ui, label: &str, page: Page, out: &mut Vec<Action>) {
     let button = egui::Button::new(RichText::new(label).size(15.0)).min_size(egui::vec2(150.0, 44.0));
-    if ui.add(button).clicked() {
+        if ui.add(button).on_hover_text(page.hint()).clicked() {
+
         out.push(Action::Go(page));
     }
 }
@@ -197,13 +198,13 @@ pub(crate) fn home(ui: &mut Ui, c: &Company, out: &mut Vec<Action>) {
                     money_label(ui, balances.get(&a.id).copied().unwrap_or(Money::ZERO), false);
                     ui.end_row();
                 }
-                ui.label("Customers owe you");
+                widgets::hint_label(ui, "Customers owe you");
                 money_label(ui, total_of(AccountType::AccountsReceivable), true);
                 ui.end_row();
-                ui.label("You owe vendors");
+                widgets::hint_label(ui, "You owe vendors");
                 money_label(ui, total_of(AccountType::AccountsPayable), true);
                 ui.end_row();
-                ui.label("Credit cards");
+                widgets::hint_label(ui, "Credit cards");
                 money_label(ui, total_of(AccountType::CreditCard), false);
                 ui.end_row();
                 ui.label(format!("Net income since {fy_start}"));
@@ -250,7 +251,7 @@ pub(crate) fn accounts(ui: &mut Ui, c: &Company, s: &mut ListState, out: &mut Ve
     egui::ScrollArea::vertical().id_salt("accounts_scroll").show(ui, |ui| {
         egui::Grid::new("accounts").striped(true).spacing([18.0, 4.0]).show(ui, |ui| {
             for h in ["Number", "Name", "Type", "Balance", ""] {
-                ui.label(RichText::new(h).strong());
+                widgets::column_header(ui, h);
             }
             ui.end_row();
             for a in c.sorted_accounts() {
@@ -268,7 +269,9 @@ pub(crate) fn accounts(ui: &mut Ui, c: &Company, s: &mut ListState, out: &mut Ve
                 ui.label(a.kind.label());
                 money_label(ui, balances.get(&a.id).copied().unwrap_or(Money::ZERO), false);
                 let toggle = if a.active { "Make inactive" } else { "Make active" };
-                if ui.small_button(toggle).clicked() {
+                                let toggle_hint = "Inactive accounts are hidden from lists but keep their history. Only an account with a zero balance can be made inactive.";
+                if ui.small_button(toggle).on_hover_text(toggle_hint).clicked() {
+
                     out.push(Action::Run {
                         cmd: Command::AccountSetActive { id: a.id, active: !a.active },
                         reset: Reset::Nothing,
@@ -295,27 +298,27 @@ fn contact_editor(ui: &mut Ui, salt: &str, n: &mut ContactInput) {
         .num_columns(4)
         .spacing([10.0, 4.0])
         .show(ui, |ui| {
-            ui.label("Name");
+            widgets::hint_label(ui, "Name");
             field(ui, &mut n.name, 200.0, "");
-            ui.label("Company");
+            widgets::hint_label(ui, "Company");
             field(ui, &mut n.company, 200.0, "");
             ui.end_row();
-            ui.label("Email");
+            widgets::hint_label(ui, "Email");
             field(ui, &mut n.email, 200.0, "");
-            ui.label("Phone");
+            widgets::hint_label(ui, "Phone");
             field(ui, &mut n.phone, 200.0, "");
             ui.end_row();
-            ui.label("Address");
+            widgets::hint_label(ui, "Address");
             field(ui, &mut n.line1, 200.0, "Street");
-            ui.label("City");
+            widgets::hint_label(ui, "City");
             field(ui, &mut n.city, 200.0, "");
             ui.end_row();
-            ui.label("State / region");
+            widgets::hint_label(ui, "State / region");
             field(ui, &mut n.region, 80.0, "");
-            ui.label("Postal code");
+            widgets::hint_label(ui, "Postal code");
             field(ui, &mut n.postal_code, 100.0, "");
             ui.end_row();
-            ui.label("Terms (days)");
+            widgets::hint_label(ui, "Terms (days)");
             field(ui, &mut n.terms, 60.0, "30");
             ui.end_row();
         });
@@ -336,7 +339,7 @@ pub(crate) fn customers(ui: &mut Ui, c: &Company, s: &mut ListState, out: &mut V
     egui::ScrollArea::vertical().id_salt("customers_scroll").show(ui, |ui| {
         egui::Grid::new("customers").striped(true).spacing([18.0, 4.0]).show(ui, |ui| {
             for h in ["Name", "Email", "Phone", "Terms", "Balance", "", ""] {
-                ui.label(RichText::new(h).strong());
+                widgets::column_header(ui, h);
             }
             ui.end_row();
             for x in c.customers.iter().filter(|x| x.active || s.show_inactive) {
@@ -372,7 +375,7 @@ pub(crate) fn vendors(ui: &mut Ui, c: &Company, s: &mut ListState, out: &mut Vec
     egui::ScrollArea::vertical().id_salt("vendors_scroll").show(ui, |ui| {
         egui::Grid::new("vendors").striped(true).spacing([18.0, 4.0]).show(ui, |ui| {
             for h in ["Name", "Email", "Phone", "Terms", "Balance", "", ""] {
-                ui.label(RichText::new(h).strong());
+                widgets::column_header(ui, h);
             }
             ui.end_row();
             for x in c.vendors.iter().filter(|x| x.active || s.show_inactive) {
@@ -408,21 +411,21 @@ pub(crate) fn items(ui: &mut Ui, c: &Company, s: &mut ListState, out: &mut Vec<A
     egui::CollapsingHeader::new("New item").default_open(c.items.is_empty()).show(ui, |ui| {
         let n = &mut s.new_item;
         egui::Grid::new("new_item").num_columns(4).spacing([10.0, 4.0]).show(ui, |ui| {
-            ui.label("Name");
+            widgets::hint_label(ui, "Name");
             field(ui, &mut n.name, 200.0, "");
-            ui.label("Type");
+            widgets::hint_label(ui, "Type");
             egui::ComboBox::from_id_salt("new_item_kind").selected_text(n.kind.label()).show_ui(ui, |ui| {
                 for k in ItemKind::ALL {
                     ui.selectable_value(&mut n.kind, k, k.label());
                 }
             });
             ui.end_row();
-            ui.label("Description");
+            widgets::hint_label(ui, "Description");
             field(ui, &mut n.description, 200.0, "");
-            ui.label("Rate");
+            widgets::hint_label(ui, "Rate");
             field(ui, &mut n.rate, 90.0, "0.00");
             ui.end_row();
-            ui.label("Income account");
+            widgets::hint_label(ui, "Income account");
             widgets::account_combo(ui, "new_item_acct", c, &mut n.account, |k| {
                 matches!(k, AccountType::Income | AccountType::OtherIncome)
             });
@@ -449,7 +452,7 @@ pub(crate) fn items(ui: &mut Ui, c: &Company, s: &mut ListState, out: &mut Vec<A
     ui.add_space(6.0);
     egui::Grid::new("items").striped(true).spacing([18.0, 4.0]).show(ui, |ui| {
         for h in ["Name", "Type", "Description", "Rate", "Income account"] {
-            ui.label(RichText::new(h).strong());
+            widgets::column_header(ui, h);
         }
         ui.end_row();
         for x in c.items.iter().filter(|x| x.active) {
@@ -472,7 +475,7 @@ pub(crate) fn transactions(ui: &mut Ui, c: &Company, out: &mut Vec<Action>) {
     egui::ScrollArea::vertical().id_salt("txn_scroll").show(ui, |ui| {
         egui::Grid::new("txns").striped(true).spacing([16.0, 4.0]).show(ui, |ui| {
             for h in ["Date", "Type", "Num", "Name", "Memo", "Amount", ""] {
-                ui.label(RichText::new(h).strong());
+                widgets::column_header(ui, h);
             }
             ui.end_row();
             for t in txns {
@@ -514,11 +517,11 @@ pub(crate) fn reports(ui: &mut Ui, c: &Company, s: &mut ReportState, out: &mut V
     });
     ui.horizontal(|ui| {
         if s.kind.uses_period() {
-            ui.label("From");
+            widgets::hint_label(ui, "From");
             field(ui, &mut s.from, 110.0, "YYYY-MM-DD");
-            ui.label("To");
+            widgets::hint_label(ui, "To");
         } else {
-            ui.label("As of");
+            widgets::hint_label(ui, "As of");
         }
         field(ui, &mut s.to, 110.0, "YYYY-MM-DD");
         if ui.button("This year").clicked() {

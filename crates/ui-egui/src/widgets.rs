@@ -233,3 +233,21 @@ pub(crate) fn report_view(ui: &mut Ui, r: &Report, out: &mut Vec<Action>) {
             });
     });
 }
+
+/// A label with hover help when `hints::field` has some for its text.
+pub(crate) fn hint_label(ui: &mut Ui, text: &str) -> egui::Response {
+    let response = ui.label(text);
+    match crate::hints::field(text) {
+        Some(hint) => response.on_hover_text(hint),
+        None => response,
+    }
+}
+
+/// A bold table column header with hover help when `hints::column` has some.
+pub(crate) fn column_header(ui: &mut Ui, text: &str) -> egui::Response {
+    let response = ui.label(RichText::new(text).strong());
+    match crate::hints::column(text) {
+        Some(hint) => response.on_hover_text(hint),
+        None => response,
+    }
+}
