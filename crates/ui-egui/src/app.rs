@@ -30,6 +30,7 @@ pub struct LedgerApp {
     allow_close: bool,
     show_about: bool,
     licenses: LicenseWindow,
+    show_nav: bool,
     title: String,
 }
 
@@ -40,6 +41,7 @@ const UNDO: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Z)
 const REDO: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Y);
 const INVOICE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::I);
 const CHECK: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::W);
+const SIDE_BAR: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::B);
 
 impl LedgerApp {
     pub fn new(cc: &eframe::CreationContext<'_>, session: Session) -> Self {
@@ -56,6 +58,7 @@ impl LedgerApp {
             allow_close: false,
             show_about: false,
             licenses: LicenseWindow::default(),
+            show_nav: true,
             title: String::new(),
         }
     }
@@ -271,11 +274,18 @@ impl LedgerApp {
         if pressed(&CHECK) {
             self.page = Page::Form(FormKind::Check);
         }
+
+        if pressed(&SIDE_BAR) {
+            self.show_nav = !self.show_nav;
+        }
     }
 
     fn menu_bar(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("menu").show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
+                if !self.show_nav && ui.button(">").on_hover_text("Show navigation bar (Cmd+B)").clicked() {
+                    self.show_nav = true;
+                }
                 ui.menu_button("File", |ui| {
                     if ui.button("New Company").clicked() {
                         ui.close_menu();
@@ -316,6 +326,12 @@ impl LedgerApp {
                         self.redo();
                     }
                 });
+                                ui.menu_button("View", |ui| {
+                    if ui.checkbox(&mut self.show_nav, "Side Bar    Ctrl+B").clicked() {
+                        ui.close_menu();
+                    }
+                });
+
                 ui.menu_button("Lists", |ui| {
                     for (label, page) in [
                         ("Chart of Accounts", Page::Accounts),
@@ -383,9 +399,17 @@ impl LedgerApp {
             .resizable(false)
             .exact_width(190.0)
             .frame(egui::Frame::none().fill(theme::NAV_BG).inner_margin(10.0))
-            .show(ctx, |ui| {
+            .show_animated(ctx, self.show_nav, |ui| {
                 theme::nav_visuals(ui);
-                ui.label(RichText::new("LedgerCraft").size(20.0).strong().color(theme::NAV_TEXT));
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("LedgerCraft").size(20.0).strong().color(theme::NAV_TEXT));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let hide = egui::Button::new(RichText::new("<").color(theme::NAV_TEXT)).frame(false);
+                        if ui.add(hide).on_hover_text("Hide side bar (Ctrl+B)").clicked() {
+                            self.show_nav = false;
+                        }
+                    });
+                });
                 ui.add_space(12.0);
                 let items: [(&str, Page); 8] = [
                     ("Home", Page::Home),
