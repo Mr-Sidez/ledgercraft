@@ -137,7 +137,7 @@ pub(crate) fn item_combo(ui: &mut Ui, salt: impl Hash, c: &Company, value: &mut 
     let text = (*value)
         .and_then(|id| c.item(id))
         .map(|x| x.spec.name.clone())
-        .unwrap_or_default();
+        .unwrap_or_else(|| "Choose item…".into());
     egui::ComboBox::from_id_salt(salt)
         .selected_text(text)
         .width(150.0)
@@ -151,8 +151,18 @@ pub(crate) fn item_combo(ui: &mut Ui, salt: impl Hash, c: &Company, value: &mut 
 }
 
 /// A single-line text field of a fixed width.
+///
+/// `add_sized` forces the width: inside a `Grid`, a plain `desired_width` is
+/// capped by the column's width from the previous frame, so fields that start
+/// narrow would stay narrow forever.
 pub(crate) fn field(ui: &mut Ui, text: &mut String, width: f32, hint: &str) -> egui::Response {
-    ui.add(egui::TextEdit::singleline(text).desired_width(width).hint_text(hint))
+    let height = ui.spacing().interact_size.y;
+    ui.add_sized([width, height], egui::TextEdit::singleline(text).hint_text(hint))
+}
+
+/// The small "remove this line" button. Plain ASCII, so it renders with any font.
+pub(crate) fn remove_button(ui: &mut Ui) -> bool {
+    ui.small_button("x").on_hover_text("Remove line").clicked()
 }
 
 /// The next unused number for a kind of transaction: one more than the

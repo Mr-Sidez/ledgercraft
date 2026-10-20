@@ -201,7 +201,7 @@ pub fn account_register(company: &Company, account: AccountId) -> Report {
             &e.date.to_string(),
             0,
             vec![
-                Cell::Text(t.body.label().into()),
+                Cell::Text(company.txn_type_label(t).into()),
                 Cell::Text(t.number.clone()),
                 Cell::Text(party),
                 Cell::Text(memo),
@@ -236,7 +236,7 @@ pub fn transaction_list(company: &Company, from: Date, to: Date) -> Report {
             &t.date.to_string(),
             0,
             vec![
-                Cell::Text(t.body.label().into()),
+                Cell::Text(company.txn_type_label(t).into()),
                 Cell::Text(t.number.clone()),
                 Cell::Text(party),
                 Cell::Text(t.memo.clone()),

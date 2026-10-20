@@ -169,6 +169,19 @@ impl Company {
         }
     }
 
+    /// What a transaction is called in lists and registers. A "check" paid
+    /// from a credit card is really a card charge, so it is named that way.
+    pub fn txn_type_label(&self, t: &Transaction) -> &'static str {
+        match &t.body {
+            TxnBody::Check(c)
+                if self.account(c.pay_from).is_some_and(|a| a.kind == AccountType::CreditCard) =>
+            {
+                "Credit Card Charge"
+            }
+            body => body.label(),
+        }
+    }
+
     pub fn account_name(&self, id: AccountId) -> String {
         self.account(id).map(Account::display_name).unwrap_or_else(|| id.to_string())
     }

@@ -126,8 +126,17 @@ fn flow_button(ui: &mut Ui, label: &str, page: Page, out: &mut Vec<Action>) {
     }
 }
 
+/// A workflow arrow, drawn rather than typed: egui's built-in font has no
+/// arrow glyph, so "→" would show as an empty box.
 fn arrow(ui: &mut Ui) {
-    ui.label(RichText::new("→").size(20.0).color(theme::MUTED));
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(28.0, 44.0), egui::Sense::hover());
+    let y = rect.center().y;
+    let stroke = egui::Stroke::new(2.0, theme::MUTED);
+    let start = egui::pos2(rect.left() + 4.0, y);
+    let tip = egui::pos2(rect.right() - 4.0, y);
+    ui.painter().line_segment([start, tip], stroke);
+    ui.painter().line_segment([tip, egui::pos2(tip.x - 7.0, y - 6.0)], stroke);
+    ui.painter().line_segment([tip, egui::pos2(tip.x - 7.0, y + 6.0)], stroke);
 }
 
 pub(crate) fn home(ui: &mut Ui, c: &Company, out: &mut Vec<Action>) {
@@ -475,7 +484,7 @@ pub(crate) fn transactions(ui: &mut Ui, c: &Company, out: &mut Vec<Action>) {
                     }
                 };
                 ui.label(muted(t.date.to_string()));
-                ui.label(muted(t.body.label().to_string()));
+                ui.label(muted(c.txn_type_label(t).to_string()));
                 ui.label(muted(t.number.clone()));
                 ui.label(muted(t.body.party().map(|p| c.party_name(p)).unwrap_or_default()));
                 ui.label(muted(t.memo.clone()));
