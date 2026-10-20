@@ -65,6 +65,8 @@ ledgercraft-cli commands                                # every command and its 
 | Safety | Void instead of delete (audit trail), payments block voiding the invoices they pay, all-or-nothing commands, atomic saves |
 
 The honest picture, and what comes next, is in [ROADMAP.md](ROADMAP.md).
+Release history is in [CHANGELOG.md](CHANGELOG.md); releases are numbered
+0.1, 0.2, 0.3 … and made as described in [docs/releasing.md](docs/releasing.md).
 
 ## Architecture
 

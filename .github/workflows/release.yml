@@ -1,0 +1,84 @@
+name: Release
+# Runs only when a version tag such as v0.2.0 is pushed. Creates a DRAFT
+# release; a maintainer reviews it and presses Publish.
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: write
+
+jobs:
+  check-version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag must match Cargo.toml version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          version=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)
+          echo "tag=$tag cargo=$version"
+          test "$tag" = "$version"
+
+  build:
+    needs: check-version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            ext: .exe
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            ext: ""
+          - os: macos-13
+            target: x86_64-apple-darwin
+            ext: ""
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            ext: ""
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Linux GUI build dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libgtk-3-dev
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.target }} -p ledgercraft -p ledgercraft-cli
+      - name: Package
+        shell: bash
+        run: |
+          name="ledgercraft-${GITHUB_REF_NAME#v}-${{ matrix.target }}"
+          mkdir "$name"
+          cp "target/${{ matrix.target }}/release/ledgercraft${{ matrix.ext }}" "$name/"
+          cp "target/${{ matrix.target }}/release/ledgercraft-cli${{ matrix.ext }}" "$name/"
+          cp README.md CHANGELOG.md LICENSE-MIT LICENSE-APACHE NOTICE "$name/"
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            7z a "$name.zip" "$name" > /dev/null
+          else
+            tar czf "$name.tar.gz" "$name"
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: ledgercraft-*.*z*
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        run: cd dist && sha256sum * > SHA256SUMS.txt
+      - uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          name: LedgerCraft ${{ github.ref_name }}
+          files: dist/*

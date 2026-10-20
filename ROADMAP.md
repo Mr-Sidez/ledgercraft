@@ -1,6 +1,6 @@
 # LedgerCraft roadmap
 
-Stage: **pre-alpha 0.1** — the double-entry core, the everyday customer,
+Stage: **pre-alpha 0.1** (version 0.1.0; releases go 0.1 → 0.2 → 0.3 …, see docs/releasing.md) — the double-entry core, the everyday customer,
 vendor and banking forms, and the core reports. Last updated 2026-10-19.
 
 Estimates are for what a typical small business uses QuickBooks Desktop for
