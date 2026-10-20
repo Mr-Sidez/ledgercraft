@@ -54,6 +54,9 @@ fn main() -> ExitCode {
     };
 
     let options = eframe::NativeOptions {
+        // wgpu (DirectX 12 / Vulkan / Metal), not OpenGL: glutin's Windows
+        // OpenGL path panics in debug builds (see Cargo.toml).
+        renderer: eframe::Renderer::Wgpu,
         viewport: egui::ViewportBuilder::default()
             .with_title("LedgerCraft")
             .with_inner_size([1280.0, 800.0])
