@@ -300,6 +300,7 @@ pub(crate) fn invoice(ui: &mut Ui, c: &Company, f: &mut InvoiceForm, out: &mut V
     }
     if clear {
         *f = InvoiceForm::default();
+        out.push(Action::ClearStatus);
     }
 }
 
@@ -815,8 +816,11 @@ pub(crate) fn journal(ui: &mut Ui, c: &Company, f: &mut JournalForm, out: &mut V
     ui.horizontal(|ui| {
         ui.label(RichText::new(format!("Debits {debits}   Credits {credits}")).strong());
         let diff = debits.saturating_sub(credits);
-        if diff.is_zero() {
+                if debits.is_zero() && credits.is_zero() {
+            // Nothing entered yet: say nothing rather than "Balanced".
+        } else if diff.is_zero() {
             ui.label(RichText::new("Balanced").color(theme::POSITIVE));
+
         } else {
             ui.label(RichText::new(format!("Out of balance by {}", diff.abs())).color(theme::NEGATIVE));
         }

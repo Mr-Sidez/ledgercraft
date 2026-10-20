@@ -5,6 +5,7 @@ use ledgercraft_engine::{sample_company, Session};
 use ledgercraft_ledger::Company;
 
 use crate::forms::Forms;
+use crate::licenses::{LicenseTab, LicenseWindow};
 use crate::pages::{self, ListState, ReportState};
 use crate::{forms, theme, Action, FormKind, Page, Reset};
 
@@ -28,6 +29,7 @@ pub struct LedgerApp {
     pending: Option<Pending>,
     allow_close: bool,
     show_about: bool,
+    licenses: LicenseWindow,
     title: String,
 }
 
@@ -53,6 +55,7 @@ impl LedgerApp {
             pending: None,
             allow_close: false,
             show_about: false,
+            licenses: LicenseWindow::default(),
             title: String::new(),
         }
     }
@@ -234,6 +237,10 @@ impl LedgerApp {
             }
             Action::Error(e) => self.error(e),
             Action::ExportCsv { name, csv } => self.export_csv(&name, &csv),
+            Action::ClearStatus => {
+                let todo = "not yet implemented";
+                panic!("{todo}")
+            },
         }
     }
 
@@ -346,10 +353,22 @@ impl LedgerApp {
                         }
                     }
                 });
-                if ui.button("Reports").clicked() {
-                    self.page = Page::Reports;
-                }
+                ui.menu_button("Reports", |ui| {
+                    for kind in ledgercraft_reports::ReportKind::ALL {
+                        if ui.button(kind.label()).clicked() {
+                            ui.close_menu();
+                            self.reports.kind = kind;
+                            self.page = Page::Reports;
+                        }
+                    }
+                });
                 ui.menu_button("Help", |ui| {
+                                        if ui.button("Licenses").clicked() {
+                        ui.close_menu();
+                        self.licenses.show_tab(LicenseTab::Summary);
+                    }
+                    ui.separator();
+                    
                     if ui.button("About LedgerCraft").clicked() {
                         ui.close_menu();
                         self.show_about = true;
@@ -453,10 +472,14 @@ impl LedgerApp {
             }
         }
         let mut open = self.show_about;
+        let mut view_licenses = false;
         egui::Window::new("About LedgerCraft").open(&mut open).collapsible(false).show(ctx, |ui| {
             ui.label(RichText::new(format!("LedgerCraft {}", env!("CARGO_PKG_VERSION"))).strong());
             ui.label("Open-source, double-entry small-business accounting in pure Rust.");
-            ui.label("Dual-licensed under MIT or Apache-2.0.");
+            ui.horizontal(|ui| {
+                ui.label("Dual-licensed under MIT or Apache-2.0.");
+                view_licenses = ui.link("View licenses").clicked();
+            });
             ui.add_space(6.0);
             ui.label(
                 RichText::new(
@@ -467,7 +490,12 @@ impl LedgerApp {
                 .color(theme::MUTED),
             );
         });
-        self.show_about = open;
+                self.show_about = open;
+        if view_licenses {
+            self.licenses.show_tab(LicenseTab::Summary);
+        }
+        self.licenses.ui(ctx);
+
     }
 }
 

@@ -131,7 +131,7 @@ fn flow_button(ui: &mut Ui, label: &str, page: Page, out: &mut Vec<Action>) {
 fn arrow(ui: &mut Ui) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(28.0, 44.0), egui::Sense::hover());
     let y = rect.center().y;
-    let stroke = egui::Stroke::new(2.0, theme::MUTED);
+    let stroke = egui::Stroke::new(2.0_f32, theme::MUTED);
     let start = egui::pos2(rect.left() + 4.0, y);
     let tip = egui::pos2(rect.right() - 4.0, y);
     ui.painter().line_segment([start, tip], stroke);

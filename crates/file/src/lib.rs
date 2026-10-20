@@ -114,12 +114,37 @@ pub fn save(path: &Path, company: &Company) -> Result<(), FileError> {
         f.write_all(json.as_bytes())?;
         f.sync_all()?;
     }
-    if let Err(e) = fs::rename(&tmp, path) {
+        if let Err(e) = replace_with_retry(&tmp, path) {
         let _ = fs::remove_file(&tmp);
         return Err(e.into());
     }
     Ok(())
 }
+
+/// Renames `tmp` over `path`. On Windows, OneDrive, antivirus scanners and
+/// search indexing often hold the target open for a moment right after a
+/// write, and the rename then fails with "access denied". Those holds are
+/// brief, so retry for up to about two seconds before giving up.
+fn replace_with_retry(tmp: &Path, path: &Path) -> std::io::Result<()> {
+    const ATTEMPTS: u32 = 20;
+    let mut attempt = 1;
+    loop {
+        match fs::rename(tmp, path) {
+            Ok(()) => return Ok(()),
+            Err(e) if attempt < ATTEMPTS && is_transient_lock(&e) => {
+                attempt += 1;
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+fn is_transient_lock(e: &std::io::Error) -> bool {
+    // ERROR_ACCESS_DENIED (5), ERROR_SHARING_VIOLATION (32), ERROR_LOCK_VIOLATION (33)
+    e.kind() == std::io::ErrorKind::PermissionDenied || matches!(e.raw_os_error(), Some(5 | 32 | 33))
+}
+
 
 fn temp_path(path: &Path) -> PathBuf {
     let mut name = path.file_name().map(|n| n.to_os_string()).unwrap_or_default();

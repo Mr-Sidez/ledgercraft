@@ -6,6 +6,7 @@
 
 mod app;
 mod forms;
+mod licenses;
 mod pages;
 mod theme;
 mod widgets;
@@ -76,6 +77,8 @@ pub(crate) enum Action {
     PaymentFrom(CustomerId),
     BillFrom(VendorId),
     PayVendor(VendorId),
-    Error(String),
+        Error(String),
+    /// A form was cleared: drop any message about what was in it.
+    ClearStatus,
     ExportCsv { name: String, csv: String },
 }
